@@ -70,8 +70,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK einrichten
-        uses: android-actions/setup-android@v3
+      # Der Runner bringt das Android SDK bereits mit – nur Lizenzen bestätigen.
+      - name: Android-SDK-Lizenzen akzeptieren
+        shell: bash
+        run: |
+          sdkm=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n 1)
+          echo "Nutze $sdkm"
+          yes | "$sdkm" --licenses > /dev/null || true
 
       - name: Gradle einrichten
         uses: gradle/actions/setup-gradle@v4
