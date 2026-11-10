@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Unionjackstar2/tedoki-Amelia/releases/latest"><strong>⬇ Neueste Version herunterladen</strong></a>
+  <a href="https://github.com/Unionjackstar2/amelia/releases/latest"><strong>⬇ Neueste Version herunterladen</strong></a>
 </p>
 
 ---
@@ -76,7 +76,7 @@ Newsletter stehen auf einem hellen Briefbogen und bleiben auch im Dunkelmodus le
 
 ## Installation
 
-1. Die neueste APK unter [**Releases**](https://github.com/Unionjackstar2/tedoki-Amelia/releases/latest) herunterladen.
+1. Die neueste APK unter [**Releases**](https://github.com/Unionjackstar2/amelia/releases/latest) herunterladen.
 2. Auf dem Handy öffnen und die Installation aus dieser Quelle erlauben.
 3. Amelia starten, E-Mail-Adresse und Passwort eingeben – fertig.
 
