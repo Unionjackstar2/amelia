@@ -24,6 +24,22 @@ class AmeliaApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         Notifier.createChannels(this)
+        // Absturzbericht sichern, damit er beim nächsten Start angezeigt werden kann
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                java.io.File(filesDir, CRASH_FILE).writeText(
+                    "Amelia ${BuildConfig.VERSION_NAME} · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n" +
+                        "${java.util.Date()}\nThread: ${thread.name}\n\n${error.stackTraceToString()}"
+                )
+            } catch (_: Throwable) {
+            }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
+    companion object {
+        const val CRASH_FILE = "last_crash.txt"
     }
 }
 

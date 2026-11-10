@@ -120,12 +120,12 @@ class MailRepository private constructor(private val context: Context) {
                 Protocol.IMAP -> ImapConnection(inCfg).apply { open(); listFolders(); logout() }
                 Protocol.POP3 -> Pop3Connection(inCfg).apply { open(); stat(); quit() }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return@withContext "Posteingang: ${e.friendlyMessage()}"
         }
         try {
             SmtpConnection(outgoingConfig(a, outPassword?.ifEmpty { null } ?: password?.ifEmpty { null })).apply { open(); quit() }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             return@withContext "Postausgang: ${e.friendlyMessage()}"
         }
         null

@@ -423,7 +423,12 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveAccount(a: Account, password: String?, outPassword: String?, onDone: () -> Unit) {
         viewModelScope.launch {
-            val id = repo.saveAccount(a, password, outPassword)
+            val id = try {
+                repo.saveAccount(a, password, outPassword)
+            } catch (e: Throwable) {
+                toast("Konto konnte nicht gespeichert werden: ${e.message ?: e.javaClass.simpleName}")
+                return@launch
+            }
             onDone()
             SyncScheduler.apply(getApplication<Application>(), settings.syncMode.value)
             repo.syncAccount(id, notify = false)?.let { toast(it) }

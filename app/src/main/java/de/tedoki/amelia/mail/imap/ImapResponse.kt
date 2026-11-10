@@ -74,7 +74,7 @@ class ImapResponse(private val segments: List<Any>) {
     override fun toString(): String = text
 
     companion object {
-        private val LITERAL_AT_END = Regex("\\{(\\d+)\\+?}$")
+        private val LITERAL_AT_END = Regex("\\{(\\d+)\\+?\\}$")
 
         fun read(socket: MailSocket): ImapResponse {
             val segments = mutableListOf<Any>()

@@ -126,7 +126,7 @@ class ImapConnection(private val config: ServerConfig) : Closeable {
     }
 
     private fun parseCapabilityCode(text: String): Boolean {
-        val m = Regex("\\[CAPABILITY ([^]]+)]", RegexOption.IGNORE_CASE).find(text) ?: return false
+        val m = Regex("\\[CAPABILITY ([^\\]]+)\\]", RegexOption.IGNORE_CASE).find(text) ?: return false
         capabilities = m.groupValues[1].split(' ').filter { it.isNotBlank() }.map { it.uppercase(Locale.US) }.toSet()
         return true
     }
@@ -249,9 +249,9 @@ class ImapConnection(private val config: ServerConfig) : Closeable {
         var modseq = 0L
         for (line in r.untagged.map { it.text } + r.text) {
             Regex("^\\* (\\d+) EXISTS", RegexOption.IGNORE_CASE).find(line)?.let { exists = it.groupValues[1].toInt() }
-            Regex("\\[UIDVALIDITY (\\d+)]", RegexOption.IGNORE_CASE).find(line)?.let { validity = it.groupValues[1].toLong() }
-            Regex("\\[UIDNEXT (\\d+)]", RegexOption.IGNORE_CASE).find(line)?.let { next = it.groupValues[1].toLong() }
-            Regex("\\[HIGHESTMODSEQ (\\d+)]", RegexOption.IGNORE_CASE).find(line)?.let { modseq = it.groupValues[1].toLong() }
+            Regex("\\[UIDVALIDITY (\\d+)\\]", RegexOption.IGNORE_CASE).find(line)?.let { validity = it.groupValues[1].toLong() }
+            Regex("\\[UIDNEXT (\\d+)\\]", RegexOption.IGNORE_CASE).find(line)?.let { next = it.groupValues[1].toLong() }
+            Regex("\\[HIGHESTMODSEQ (\\d+)\\]", RegexOption.IGNORE_CASE).find(line)?.let { modseq = it.groupValues[1].toLong() }
         }
         return SelectInfo(exists, validity, next, modseq)
     }
@@ -362,7 +362,7 @@ class ImapConnection(private val config: ServerConfig) : Closeable {
         }
         val texts = r.untagged.map { it.text } + r.text
         for (t in texts) {
-            val m = Regex("\\[COPYUID \\d+ ([0-9:,]+) ([0-9:,]+)]", RegexOption.IGNORE_CASE).find(t) ?: continue
+            val m = Regex("\\[COPYUID \\d+ ([0-9:,]+) ([0-9:,]+)\\]", RegexOption.IGNORE_CASE).find(t) ?: continue
             val src = expandUidSet(m.groupValues[1])
             val dst = expandUidSet(m.groupValues[2])
             if (src.size == dst.size) return src.zip(dst).toMap()
@@ -390,7 +390,7 @@ class ImapConnection(private val config: ServerConfig) : Closeable {
         sendLiteralCommand(tag, "APPEND ${quote(path)} $flags ", listOf(message))
         val r = readTagged(tag)
         if (!r.ok) throw ImapCommandException("Ablegen in „${ModifiedUtf7.decode(path)}“ fehlgeschlagen: ${r.text.substringAfter(' ').take(150)}")
-        return Regex("\\[APPENDUID \\d+ (\\d+)]", RegexOption.IGNORE_CASE).find(r.text)?.groupValues?.get(1)?.toLongOrNull()
+        return Regex("\\[APPENDUID \\d+ (\\d+)\\]", RegexOption.IGNORE_CASE).find(r.text)?.groupValues?.get(1)?.toLongOrNull()
     }
 
     fun noop() {

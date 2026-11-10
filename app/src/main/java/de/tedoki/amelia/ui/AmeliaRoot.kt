@@ -24,6 +24,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -65,6 +67,8 @@ fun AmeliaRoot(vm: AmeliaViewModel) {
 
     val defaultMode = if (startInbox) MainMode.INBOX else MainMode.DESK
     BackHandler(enabled = stack.isNotEmpty() || query.isNotEmpty() || mode != defaultMode) { vm.handleBack() }
+
+    CrashReportDialog()
 
     AuroraBackground {
         when {
@@ -216,3 +220,47 @@ private fun UndoAndToasts(vm: AmeliaViewModel, modifier: Modifier) {
         }
     }
 }
+
+/** Zeigt nach einem Absturz einmalig den Fehlerbericht an (zum Kopieren und Weitergeben). */
+@Composable
+private fun CrashReportDialog() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val file = remember { java.io.File(context.filesDir, de.tedoki.amelia.AmeliaApplication.CRASH_FILE) }
+    var report by remember { mutableStateOf(if (file.exists()) file.readText() else null) }
+    val text = report ?: return
+    fun close() {
+        file.delete()
+        report = null
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { close() },
+        title = { Text("Amelia wurde unerwartet beendet") },
+        text = {
+            androidx.compose.foundation.layout.Column(
+                Modifier.verticalScrollable()
+            ) {
+                Text(
+                    "Mit diesem Bericht lässt sich der Fehler finden. Tippe auf „Kopieren“ und schicke ihn weiter.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text.take(6000),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
+                close()
+            }) { Text("Kopieren") }
+        },
+        dismissButton = { TextButton(onClick = { close() }) { Text("Schließen") } }
+    )
+}
+
+@Composable
+private fun Modifier.verticalScrollable(): Modifier =
+    this.verticalScroll(androidx.compose.foundation.rememberScrollState())
