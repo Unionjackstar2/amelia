@@ -1,1 +1,129 @@
+name: Amelia APK bauen
 
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: amelia-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+
+      # Liegt eine ZIP im Hauptverzeichnis, ersetzt ihr Inhalt den bisherigen Quellcode.
+      - name: ZIP entpacken (falls vorhanden)
+        id: unzip
+        shell: bash
+        run: |
+          shopt -s nullglob
+          zips=( *.zip )
+          if [ ${#zips[@]} -eq 0 ]; then
+            echo "Keine ZIP gefunden – baue den vorhandenen Quellcode."
+            echo "extracted=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Bei mehreren ZIPs die neueste nehmen
+          zip=$(ls -t "${zips[@]}" | head -n 1)
+          echo "Entpacke $zip"
+          tmp="$RUNNER_TEMP/zip"
+          rm -rf "$tmp" && mkdir -p "$tmp"
+          unzip -q "$zip" -d "$tmp"
+          # Projektwurzel finden (Ordner mit settings.gradle.kts)
+          root=$(dirname "$(find "$tmp" -maxdepth 3 -name settings.gradle.kts | head -n 1)")
+          if [ -z "$root" ] || [ ! -f "$root/settings.gradle.kts" ]; then
+            echo "::error::In $zip wurde keine settings.gradle.kts gefunden."
+            exit 1
+          fi
+          # Alten Quellcode entfernen (außer .git und .github), dann neuen übernehmen
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          rsync -a --exclude ".git" --exclude ".github" "$root"/ ./
+          echo "extracted=true" >> "$GITHUB_OUTPUT"
+
+      - name: Entpackten Quellcode ins Repository übernehmen
+        if: steps.unzip.outputs.extracted == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Keine Änderungen."
+          else
+            git commit -m "Quellcode aus ZIP übernommen [skip ci]"
+            git push
+          fi
+
+      - name: Java 17 einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle einrichten
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Signaturschlüssel vorbereiten
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_SECRET: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD_SECRET: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::Kein KEYSTORE_BASE64-Secret – die APK wird mit dem Debug-Schlüssel signiert."
+            exit 0
+          fi
+          ks="$RUNNER_TEMP/release.jks"
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$ks"
+          alias="$KEY_ALIAS_SECRET"
+          if [ -z "$alias" ]; then
+            alias=$(keytool -list -v -keystore "$ks" -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
+              | grep -m1 -E "^(Alias name|Aliasname):" | sed -E 's/^[^:]+:[[:space:]]*//')
+          fi
+          if [ -z "$alias" ]; then
+            echo "::error::Alias im Keystore nicht gefunden. Passwort prüfen oder Secret KEY_ALIAS setzen."
+            exit 1
+          fi
+          echo "Verwende Schlüssel-Alias: $alias"
+          {
+            echo "KEYSTORE_PATH=$ks"
+            echo "STORE_PASSWORD=$KEYSTORE_PASSWORD"
+            echo "KEY_ALIAS=$alias"
+            echo "KEY_PASSWORD=${KEY_PASSWORD_SECRET:-$KEYSTORE_PASSWORD}"
+          } >> "$GITHUB_ENV"
+
+      - name: APK bauen
+        run: gradle --no-daemon :app:assembleRelease --stacktrace
+
+      - name: APK umbenennen
+        id: apk
+        shell: bash
+        run: |
+          apk=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          name="Amelia-2.0.${GITHUB_RUN_NUMBER}.apk"
+          cp "$apk" "$name"
+          echo "file=$name" >> "$GITHUB_OUTPUT"
+
+      - name: APK hochladen
+        uses: actions/upload-artifact@v4
+        with:
+          name: Amelia-2.0.${{ github.run_number }}
+          path: ${{ steps.apk.outputs.file }}
+          retention-days: 30
