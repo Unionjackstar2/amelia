@@ -94,6 +94,7 @@ import de.tedoki.amelia.ui.components.swipeVisual
 import de.tedoki.amelia.ui.inbox.roleIcon
 import de.tedoki.amelia.ui.inbox.sortedFolders
 import de.tedoki.amelia.data.SwipeAction
+import de.tedoki.amelia.data.CardStyle
 import de.tedoki.amelia.ui.theme.Brand
 import de.tedoki.amelia.ui.theme.glass
 import kotlin.math.abs
@@ -115,6 +116,7 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
     var snoozeTarget by remember { mutableStateOf<Message?>(null) }
     var moveTarget by remember { mutableStateOf<Message?>(null) }
     val upAction by vm.settings.swipeUp.collectAsState()
+    val cardStyle by vm.settings.cardStyle.collectAsState()
     val downAction by vm.settings.swipeDown.collectAsState()
     val folders by vm.folders.collectAsState()
 
@@ -187,6 +189,7 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                         onOpen = vm::open,
                         upAction = upAction,
                         downAction = downAction,
+                        cardStyle = cardStyle,
                         flyAway = { action, m -> vm.removes(action) && vm.swipeProblem(action, m) == null },
                         onAction = { action, m ->
                             val problem = vm.swipeProblem(action, m)
@@ -275,7 +278,8 @@ private fun CardCarousel(
     upAction: SwipeAction,
     downAction: SwipeAction,
     flyAway: (SwipeAction, Message) -> Boolean,
-    onAction: (SwipeAction, Message) -> Unit
+    onAction: (SwipeAction, Message) -> Unit,
+    cardStyle: CardStyle
 ) {
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, messages.lastIndex)) { messages.size }
     val scope = rememberCoroutineScope()
@@ -359,6 +363,7 @@ private fun CardCarousel(
                         dragProgress = (drag.value / threshold).coerceIn(-1.5f, 1.5f),
                         upVisual = swipeVisual(upAction, message.seen, message.flagged),
                         downVisual = swipeVisual(downAction, message.seen, message.flagged),
+                        style = cardStyle,
                         onClick = {
                             if (isCurrent) onOpen(message) else scope.launch { pager.animateScrollToPage(page) }
                         }
@@ -382,6 +387,20 @@ private fun MailCard(
     dragProgress: Float,
     upVisual: SwipeVisual?,
     downVisual: SwipeVisual?,
+    style: CardStyle,
+    onClick: () -> Unit
+) {
+    PaperTheme(style) { MailCardBody(message, account, dragProgress, upVisual, downVisual, style, onClick) }
+}
+
+@Composable
+private fun MailCardBody(
+    message: Message,
+    account: Account?,
+    dragProgress: Float,
+    upVisual: SwipeVisual?,
+    downVisual: SwipeVisual?,
+    style: CardStyle,
     onClick: () -> Unit
 ) {
     val scheme = MaterialTheme.colorScheme
@@ -395,10 +414,10 @@ private fun MailCard(
     Box(
         Modifier
             .fillMaxSize()
-            .glass(RoundedCornerShape(34.dp), tint = tint, elevation = 18.dp)
+            .cardSurface(style, seed = message.id, tint = tint, elevation = 18.dp)
             .clickable(onClick = onClick)
     ) {
-        Column(Modifier.fillMaxSize().padding(22.dp)) {
+        Column(Modifier.fillMaxSize().padding(cardPadding(style))) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 account?.let {
                     AccountDot(it.color)

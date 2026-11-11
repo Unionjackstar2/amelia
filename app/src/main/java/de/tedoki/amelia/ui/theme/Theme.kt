@@ -156,7 +156,10 @@ fun AmeliaTheme(mode: ThemeMode, dynamicColor: Boolean, content: @Composable () 
         else -> Light
     }
     CompositionLocalProvider(LocalIsDark provides dark) {
-        MaterialTheme(colorScheme = scheme, typography = AmeliaType, shapes = AmeliaShapes, content = content)
+        MaterialTheme(colorScheme = scheme, typography = AmeliaType, shapes = AmeliaShapes) {
+            // Standard-Textfarbe passend zum Hell-/Dunkelmodus
+            CompositionLocalProvider(androidx.compose.material3.LocalContentColor provides scheme.onSurface, content = content)
+        }
     }
 }
 

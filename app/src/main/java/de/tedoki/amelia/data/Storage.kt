@@ -83,6 +83,14 @@ enum class SwipeAction(val label: String) {
     NONE("Nichts")
 }
 
+/** Aussehen der Karten auf dem Schreibtisch. */
+enum class CardStyle(val label: String) {
+    GLASS("Schlicht"),
+    LINED("Linienpapier"),
+    SPIRAL("Ringbuch"),
+    DECKLE("Büttenpapier")
+}
+
 enum class NotificationContent(val label: String) {
     FULL("Absender und Betreff"),
     SENDER("Nur Absender"),
@@ -127,6 +135,9 @@ class AppSettings private constructor(context: Context) {
     private val _quietEnd = intPref("quietEnd", 7)
     private val _appLock = boolPref("appLock", false)
     private val _linkCheck = enumPref("linkCheck", LinkCheck.ALWAYS, LinkCheck.values())
+    private val _cardStyle = enumPref("cardStyle", CardStyle.GLASS, CardStyle.values())
+    val cardStyle: StateFlow<CardStyle> = _cardStyle.asStateFlow()
+    fun setCardStyle(v: CardStyle) = putEnum("cardStyle", _cardStyle, v)
 
     val swipeLeft: StateFlow<SwipeAction> = _swipeLeft.asStateFlow()
     val swipeRight: StateFlow<SwipeAction> = _swipeRight.asStateFlow()

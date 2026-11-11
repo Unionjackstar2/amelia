@@ -73,6 +73,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import de.tedoki.amelia.BuildConfig
 import de.tedoki.amelia.R
+import de.tedoki.amelia.data.CardStyle
 import de.tedoki.amelia.data.LinkCheck
 import de.tedoki.amelia.data.NotificationContent
 import de.tedoki.amelia.data.SwipeAction
@@ -175,6 +176,7 @@ fun SettingsScreen(vm: AmeliaViewModel) {
     val appLock by vm.settings.appLock.collectAsState()
     val linkCheck by vm.settings.linkCheck.collectAsState()
     val trusted by vm.settings.trustedSenders.collectAsState()
+    val cardStyle by vm.settings.cardStyle.collectAsState()
     var showTrusted by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
@@ -299,6 +301,15 @@ fun SettingsScreen(vm: AmeliaViewModel) {
             }
 
             Section("Darstellung") {
+                Text("Kartendesign", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 18.dp, top = 12.dp))
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    CardStyle.values().forEach { style ->
+                        de.tedoki.amelia.ui.desk.CardStylePreview(style, style == cardStyle) { vm.settings.setCardStyle(style) }
+                    }
+                }
                 ThemeMode.values().forEach { t -> ChoiceRow(t.label, t == theme) { vm.setTheme(t) } }
                 if (Build.VERSION.SDK_INT >= 31) {
                     SwitchRow("Systemfarben", "Farben aus dem Hintergrundbild übernehmen (Material You)", dynamic, vm::setDynamic)
