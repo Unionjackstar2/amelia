@@ -9,6 +9,9 @@ import de.tedoki.amelia.data.DeskRange
 import de.tedoki.amelia.data.Draft
 import de.tedoki.amelia.data.DraftAttachment
 import de.tedoki.amelia.data.MailRepository
+import de.tedoki.amelia.data.SwipeAction
+import de.tedoki.amelia.data.TestResult
+import de.tedoki.amelia.data.db.identityList
 import de.tedoki.amelia.data.MessageContent
 import de.tedoki.amelia.data.SyncMode
 import de.tedoki.amelia.data.ThemeMode
@@ -54,7 +57,9 @@ data class ComposeInit(
     val subject: String,
     val body: String,
     val attachments: List<DraftAttachment>,
-    val replyToId: Long?
+    val replyToId: Long?,
+    /** Gewählte Absenderadresse (Identität). */
+    val fromEmail: String = ""
 )
 
 sealed interface Screen {
@@ -310,6 +315,45 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
         if (missing) toast("Für dieses Konto gibt es keinen Archiv-Ordner. Über „Verschieben“ einen Ordner wählen.")
     }
 
+    fun spam(messages: List<Message>) {
+        var missing = false
+        for ((accountId, list) in messages.groupBy { it.accountId }) {
+            val junk = folders.value.firstOrNull { it.accountId == accountId && it.role == FolderRole.JUNK }
+            if (junk == null) { missing = true; continue }
+            val movable = list.filter { it.folderId != junk.id }
+            if (movable.isEmpty()) continue
+            schedule(movable.map { it.id }, Pending.MOVE, junk.id, if (movable.size == 1) "Als Spam verschoben" else "${movable.size} als Spam verschoben")
+        }
+        if (missing) toast("Für dieses Konto gibt es keinen Spam-Ordner.")
+    }
+
+    /**
+     * Prüft, ob eine Wischaktion die Nachricht aus der Ansicht entfernt.
+     * Liefert eine Meldung, falls die Aktion hier nicht möglich ist.
+     */
+    fun swipeProblem(action: SwipeAction, m: Message): String? = when (action) {
+        SwipeAction.ARCHIVE -> folders.value.firstOrNull { it.accountId == m.accountId && it.role == FolderRole.ARCHIVE }
+            .let { if (it == null) "Für dieses Konto gibt es keinen Archiv-Ordner." else if (it.id == m.folderId) "Liegt schon im Archiv." else null }
+        SwipeAction.SPAM -> folders.value.firstOrNull { it.accountId == m.accountId && it.role == FolderRole.JUNK }
+            .let { if (it == null) "Für dieses Konto gibt es keinen Spam-Ordner." else if (it.id == m.folderId) "Liegt schon im Spam-Ordner." else null }
+        else -> null
+    }
+
+    /** Aktionen, die die Nachricht aus der aktuellen Ansicht nehmen. */
+    fun removes(action: SwipeAction) = action == SwipeAction.TRASH || action == SwipeAction.ARCHIVE || action == SwipeAction.SPAM
+
+    /** Führt eine Wischaktion ohne Rückfrage aus (Parken und Verschieben brauchen eine Auswahl in der Oberfläche). */
+    fun applySwipe(action: SwipeAction, m: Message) {
+        when (action) {
+            SwipeAction.TRASH -> delete(listOf(m))
+            SwipeAction.ARCHIVE -> archive(listOf(m))
+            SwipeAction.SPAM -> spam(listOf(m))
+            SwipeAction.TOGGLE_READ -> setSeen(listOf(m.id), !m.seen)
+            SwipeAction.FLAG -> setFlagged(listOf(m.id), !m.flagged)
+            SwipeAction.SNOOZE, SwipeAction.MOVE, SwipeAction.NONE -> {}
+        }
+    }
+
     fun move(messages: List<Message>, target: Folder) {
         val list = messages.filter { it.accountId == target.accountId && it.folderId != target.id }
         if (list.isEmpty()) return
@@ -375,7 +419,10 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
         }
         val content = runCatching { repo.content(source.id) }.getOrNull()
         val originalText = content?.text ?: content?.html?.let { MimeUtil.htmlToText(it) } ?: source.preview
-        val own = accs.map { it.email.lowercase() }.toSet()
+        val own = accs.flatMap { a -> a.identityList().map { it.email.lowercase() } }.toSet()
+        // Antwort von der Adresse, an die die Mail ging (z. B. ein Alias)
+        val recipients = (MimeUtil.parseAddressList(source.toList) + MimeUtil.parseAddressList(source.ccList)).map { it.email.lowercase() }
+        val fromIdentity = account.identityList().firstOrNull { it.email.lowercase() in recipients }?.email ?: account.email
         return when (args.mode) {
             ComposeMode.REPLY, ComposeMode.REPLY_ALL -> {
                 val replyTarget = MimeUtil.parseAddressList(source.replyTo).ifEmpty { listOf(Address(source.fromName, source.fromEmail)) }
@@ -393,7 +440,8 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
                     prefixed("Re: ", source.subject),
                     "$signature\n\nAm ${Fmt.long(source.date)} schrieb ${source.senderDisplay}:\n$quote",
                     emptyList(),
-                    source.id
+                    source.id,
+                    fromIdentity
                 )
             }
             else -> {
@@ -408,7 +456,7 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
                 val atts = content?.attachments?.map {
                     DraftAttachment(it.name, it.mimeType, it.size, sourceMessageId = source.id, sourceSection = it.section)
                 } ?: emptyList()
-                ComposeInit(account.id, args.to.orEmpty(), "", prefixed("Fwd: ", source.subject), signature + header + originalText, atts, null)
+                ComposeInit(account.id, args.to.orEmpty(), "", prefixed("Fwd: ", source.subject), signature + header + originalText, atts, null, fromIdentity)
             }
         }
     }
@@ -438,7 +486,7 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------------------------------------------------------------- Konten
 
-    suspend fun testAccount(a: Account, password: String?, outPassword: String?): String? = repo.testAccount(a, password, outPassword)
+    suspend fun testAccount(a: Account, password: String?, outPassword: String?): TestResult = repo.testAccount(a, password, outPassword)
 
     fun saveAccount(a: Account, password: String?, outPassword: String?, onDone: () -> Unit) {
         viewModelScope.launch {

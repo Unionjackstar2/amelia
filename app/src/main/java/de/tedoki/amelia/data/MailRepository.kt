@@ -19,6 +19,8 @@ import de.tedoki.amelia.mail.mime.BodyAnalyzer
 import de.tedoki.amelia.mail.mime.MimePart
 import de.tedoki.amelia.mail.mime.MimeUtil
 import de.tedoki.amelia.mail.mime.RawMessage
+import de.tedoki.amelia.mail.net.CertificateInfo
+import de.tedoki.amelia.mail.net.CertificateUntrustedException
 import de.tedoki.amelia.mail.net.MailException
 import de.tedoki.amelia.mail.net.ServerConfig
 import de.tedoki.amelia.mail.net.friendlyMessage
@@ -72,8 +74,15 @@ data class Draft(
     val subject: String,
     val text: String,
     val attachments: List<DraftAttachment>,
-    val replyToId: Long? = null
+    val replyToId: Long? = null,
+    /** Absender (Identität). Leer = Hauptadresse des Kontos. */
+    val fromName: String? = null,
+    val fromEmail: String? = null
 )
+
+data class TestResult(val error: String? = null, val certificate: CertificateInfo? = null) {
+    val ok: Boolean get() = error == null && certificate == null
+}
 
 data class SyncState(val running: Set<Long> = emptySet(), val lastError: String? = null) {
     val isRunning: Boolean get() = running.isNotEmpty()
@@ -102,33 +111,37 @@ class MailRepository private constructor(private val context: Context) {
     fun incomingConfig(a: Account, passwordOverride: String? = null): ServerConfig {
         val pw = passwordOverride ?: CredentialVault.decrypt(a.passwordEnc)
             ?: throw MailException("Das gespeicherte Passwort ist nicht mehr lesbar. Bitte im Konto neu eingeben.", kind = MailException.Kind.AUTH)
-        return ServerConfig(a.inHost, a.inPort, a.inSecurity, a.inUser.ifBlank { a.email }, pw)
+        return ServerConfig(a.inHost, a.inPort, a.inSecurity, a.inUser.ifBlank { a.email }, pw, a.pinnedSet)
     }
 
     fun outgoingConfig(a: Account, passwordOverride: String? = null): ServerConfig {
         val pw = passwordOverride
             ?: (if (a.outPasswordEnc.isNotEmpty()) CredentialVault.decrypt(a.outPasswordEnc) else CredentialVault.decrypt(a.passwordEnc))
             ?: throw MailException("Das gespeicherte Passwort ist nicht mehr lesbar. Bitte im Konto neu eingeben.", kind = MailException.Kind.AUTH)
-        return ServerConfig(a.outHost, a.outPort, a.outSecurity, a.outUser.ifBlank { a.inUser.ifBlank { a.email } }, pw)
+        return ServerConfig(a.outHost, a.outPort, a.outSecurity, a.outUser.ifBlank { a.inUser.ifBlank { a.email } }, pw, a.pinnedSet)
     }
 
-    /** Prüft Posteingang und Postausgang. Liefert eine Fehlermeldung oder null. */
-    suspend fun testAccount(a: Account, password: String?, outPassword: String?): String? = withContext(Dispatchers.IO) {
+    /** Prüft Posteingang und Postausgang. */
+    suspend fun testAccount(a: Account, password: String?, outPassword: String?): TestResult = withContext(Dispatchers.IO) {
         try {
             val inCfg = incomingConfig(a, password?.ifEmpty { null })
             when (a.protocol) {
                 Protocol.IMAP -> ImapConnection(inCfg).apply { open(); listFolders(); logout() }
                 Protocol.POP3 -> Pop3Connection(inCfg).apply { open(); stat(); quit() }
             }
+        } catch (e: CertificateUntrustedException) {
+            return@withContext TestResult(certificate = e.info)
         } catch (e: Throwable) {
-            return@withContext "Posteingang: ${e.friendlyMessage()}"
+            return@withContext TestResult(error = "Posteingang: ${e.friendlyMessage()}")
         }
         try {
             SmtpConnection(outgoingConfig(a, outPassword?.ifEmpty { null } ?: password?.ifEmpty { null })).apply { open(); quit() }
+        } catch (e: CertificateUntrustedException) {
+            return@withContext TestResult(certificate = e.info)
         } catch (e: Throwable) {
-            return@withContext "Postausgang: ${e.friendlyMessage()}"
+            return@withContext TestResult(error = "Postausgang: ${e.friendlyMessage()}")
         }
-        null
+        TestResult()
     }
 
     suspend fun saveAccount(a: Account, password: String?, outPassword: String?): Long = withContext(Dispatchers.IO) {
@@ -210,7 +223,9 @@ class MailRepository private constructor(private val context: Context) {
             null
         } catch (e: Exception) {
             Log.w(TAG, "Sync ${a.email} fehlgeschlagen", e)
-            val msg = e.friendlyMessage()
+            val msg = if (e is CertificateUntrustedException) {
+                "${e.message} Zum Bestätigen das Konto öffnen und „Prüfen und speichern“ tippen."
+            } else e.friendlyMessage()
             accounts.setSyncResult(a.id, a.lastSync, msg)
             msg
         } finally {
@@ -455,7 +470,8 @@ class MailRepository private constructor(private val context: Context) {
             seen = h.flags.any { it.equals("\\Seen", true) },
             flagged = h.flags.any { it.equals("\\Flagged", true) },
             answered = h.flags.any { it.equals("\\Answered", true) },
-            listUnsubscribe = hm["list-unsubscribe"].orEmpty()
+            listUnsubscribe = hm["list-unsubscribe"].orEmpty(),
+            authResult = MimeUtil.authResult(hm["authentication-results"])
         )
         // Vollständig nur, wenn keine weiteren Textteile zusammengesetzt werden müssen
         val complete = layout != null && (layout.html != null || layout.extraPlain.isEmpty())
@@ -549,7 +565,8 @@ class MailRepository private constructor(private val context: Context) {
             bodyLoaded = true,
             hasAttachments = layout.attachments.isNotEmpty(),
             seen = seen,
-            listUnsubscribe = h["list-unsubscribe"].orEmpty()
+            listUnsubscribe = h["list-unsubscribe"].orEmpty(),
+            authResult = MimeUtil.authResult(h["authentication-results"])
         )
         val id = messages.insertIgnore(m)
         if (id <= 0) return null
@@ -784,7 +801,7 @@ class MailRepository private constructor(private val context: Context) {
         }
         val references = original?.let { (it.references + " " + it.messageId).trim() }
         val out = OutgoingMessage(
-            from = Address(a.senderName, a.email),
+            from = Address(draft.fromName ?: a.senderName, draft.fromEmail?.takeIf { it.isNotBlank() } ?: a.email),
             to = draft.to, cc = draft.cc, bcc = draft.bcc,
             subject = draft.subject,
             text = draft.text,
@@ -798,7 +815,7 @@ class MailRepository private constructor(private val context: Context) {
             val smtp = SmtpConnection(outgoingConfig(a))
             try {
                 smtp.open()
-                smtp.send(a.email, out.allRecipients, bytes)
+                smtp.send(out.from.email, out.allRecipients, bytes)
                 smtp.quit()
             } finally {
                 smtp.close()

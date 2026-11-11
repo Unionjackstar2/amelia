@@ -12,6 +12,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import de.tedoki.amelia.mail.imap.FolderRole
 import de.tedoki.amelia.mail.net.Security
 import kotlinx.coroutines.flow.Flow
@@ -44,8 +46,27 @@ data class Account(
     val sortOrder: Int = 0,
     val lastSync: Long = 0,
     val lastError: String? = null,
-    val supportsIdle: Boolean = false
+    val supportsIdle: Boolean = false,
+    /** Vom Nutzer bestätigte Zertifikats-Fingerabdrücke (eigene Server), durch Zeilenumbruch getrennt. */
+    val pinnedCerts: String = "",
+    /** Weitere Absenderadressen, je Zeile "Name|adresse@domain". */
+    val identities: String = "",
+    val notify: Boolean = true
 )
+
+val Account.pinnedSet: Set<String> get() = pinnedCerts.lines().map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+
+data class Identity(val name: String, val email: String)
+
+fun Account.identityList(): List<Identity> =
+    listOf(Identity(senderName, email)) + identities.lines().mapNotNull { line ->
+        val parts = line.split('|')
+        val email = parts.getOrNull(1)?.trim().orEmpty()
+        if (email.isEmpty()) null else Identity(parts[0].trim(), email)
+    }
+
+fun encodeIdentities(list: List<Identity>): String =
+    list.filter { it.email.isNotBlank() }.joinToString("\n") { "${it.name.replace("|", " ")}|${it.email.trim()}" }
 
 @Entity(tableName = "folders", indices = [Index("accountId")])
 data class Folder(
@@ -120,7 +141,9 @@ data class Message(
     val pendingAt: Long = 0,
     /** 0 = nicht geparkt. */
     val snoozedUntil: Long = 0,
-    val listUnsubscribe: String = ""
+    val listUnsubscribe: String = "",
+    /** Absenderprüfung des eigenen Servers: "pass", "fail" oder "". */
+    val authResult: String = ""
 )
 
 val Message.senderDisplay: String get() = fromName.ifBlank { fromEmail.ifBlank { "Unbekannt" } }
@@ -337,7 +360,7 @@ interface MessageDao {
     suspend fun contacts(q: String): List<Contact>
 }
 
-@Database(entities = [Account::class, Folder::class, Message::class], version = 1, exportSchema = false)
+@Database(entities = [Account::class, Folder::class, Message::class], version = 2, exportSchema = false)
 abstract class AmeliaDatabase : RoomDatabase() {
     abstract fun accounts(): AccountDao
     abstract fun folders(): FolderDao
@@ -347,8 +370,19 @@ abstract class AmeliaDatabase : RoomDatabase() {
         @Volatile
         private var instance: AmeliaDatabase? = null
 
+        /** Version 2: Zertifikate, Identitäten, Benachrichtigung je Konto, Absenderprüfung. */
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE accounts ADD COLUMN pinnedCerts TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE accounts ADD COLUMN identities TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE accounts ADD COLUMN notify INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE messages ADD COLUMN authResult TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun get(context: Context): AmeliaDatabase = instance ?: synchronized(this) {
             instance ?: Room.databaseBuilder(context.applicationContext, AmeliaDatabase::class.java, "amelia2.db")
+                .addMigrations(MIGRATION_1_2)
                 .fallbackToDestructiveMigration(true)
                 .build()
                 .also { instance = it }

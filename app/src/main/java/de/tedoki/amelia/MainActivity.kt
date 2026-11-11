@@ -6,7 +6,14 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.Box
+import de.tedoki.amelia.ui.LockScreen
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -43,11 +50,46 @@ class AmeliaApplication : Application() {
     }
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val vm: AmeliaViewModel by viewModels()
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
+    /** App-Sperre: gesperrt beim Start und nach mehr als einer Minute im Hintergrund. */
+    private var locked by mutableStateOf(false)
+    private var lastStop = 0L
+    private var authenticating = false
+
+    private fun authenticate() {
+        if (authenticating) return
+        authenticating = true
+        val prompt = BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                authenticating = false
+                locked = false
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                authenticating = false
+            }
+        })
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Amelia entsperren")
+            .setSubtitle("Deine Mails sind geschützt")
+            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
+            .build()
+        try {
+            prompt.authenticate(info)
+        } catch (e: Exception) {
+            authenticating = false
+            locked = false // Ohne verfügbare Sperre nicht aussperren
+        }
+    }
+
+    private fun applyRecentsPrivacy() {
+        if (Build.VERSION.SDK_INT >= 33) setRecentsScreenshotEnabled(!vm.settings.appLock.value)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -56,6 +98,8 @@ class MainActivity : ComponentActivity() {
         )
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handleIntent(intent)
+        locked = vm.settings.appLock.value
+        applyRecentsPrivacy()
 
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -67,14 +111,27 @@ class MainActivity : ComponentActivity() {
             val theme by vm.settings.theme.collectAsState()
             val dynamic by vm.settings.dynamicColor.collectAsState()
             AmeliaTheme(theme, dynamic) {
-                AmeliaRoot(vm)
+                Box {
+                    AmeliaRoot(vm)
+                    if (locked) {
+                        LockScreen(onUnlock = ::authenticate, onLeave = { finish() })
+                        LaunchedEffect(Unit) { authenticate() }
+                    }
+                }
             }
         }
     }
 
     override fun onStart() {
         super.onStart()
+        applyRecentsPrivacy()
+        if (vm.settings.appLock.value && lastStop > 0 && System.currentTimeMillis() - lastStop > 60_000) locked = true
         vm.onAppForeground()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!authenticating) lastStop = System.currentTimeMillis()
     }
 
     override fun onNewIntent(intent: Intent) {

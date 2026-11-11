@@ -40,7 +40,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -264,3 +266,31 @@ private fun CrashReportDialog() {
 @Composable
 private fun Modifier.verticalScrollable(): Modifier =
     this.verticalScroll(androidx.compose.foundation.rememberScrollState())
+
+/** Sperrbildschirm der App-Sperre. Fängt alle Berührungen ab, damit nichts darunter bedienbar ist. */
+@Composable
+fun LockScreen(onUnlock: () -> Unit, onLeave: () -> Unit) {
+    BackHandler(onBack = onLeave)
+    AuroraBackground(
+        Modifier.zIndex(100f).pointerInput(Unit) {
+            awaitPointerEventScope { while (true) awaitPointerEvent().changes.forEach { it.consume() } }
+        }
+    ) {
+        androidx.compose.foundation.layout.Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+        ) {
+            androidx.compose.foundation.Image(
+                androidx.compose.ui.res.painterResource(de.tedoki.amelia.R.drawable.amelia_logo), null,
+                modifier = Modifier.padding(bottom = 24.dp).width(96.dp).height(96.dp)
+                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(30.dp))
+            )
+            Text("Amelia ist gesperrt", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(24.dp))
+            de.tedoki.amelia.ui.components.MorphFab(
+                androidx.compose.material.icons.Icons.Outlined.Lock, "Entsperren", onClick = onUnlock
+            )
+        }
+    }
+}

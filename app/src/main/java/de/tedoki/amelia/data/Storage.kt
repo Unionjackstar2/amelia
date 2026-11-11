@@ -71,6 +71,30 @@ enum class DeskRange(val label: String, val days: Int) {
     TODAY("Heute", 0), TWO_DAYS("2 Tage", 2), WEEK("Woche", 7), MONTH("Monat", 30), ALL("Alle", -1)
 }
 
+/** Was eine Wischgeste auslöst. */
+enum class SwipeAction(val label: String) {
+    TRASH("Papierkorb"),
+    ARCHIVE("Archivieren"),
+    SNOOZE("Parken"),
+    TOGGLE_READ("Gelesen / ungelesen"),
+    FLAG("Markieren"),
+    SPAM("Spam"),
+    MOVE("Verschieben"),
+    NONE("Nichts")
+}
+
+enum class NotificationContent(val label: String) {
+    FULL("Absender und Betreff"),
+    SENDER("Nur Absender"),
+    MINIMAL("Nur „Neue E-Mail“")
+}
+
+enum class LinkCheck(val label: String) {
+    ALWAYS("Immer vorher anzeigen"),
+    SUSPICIOUS("Nur bei Verdacht"),
+    NEVER("Direkt öffnen")
+}
+
 class AppSettings private constructor(context: Context) {
     private val prefs = context.getSharedPreferences("amelia_settings", Context.MODE_PRIVATE)
 
@@ -84,6 +108,78 @@ class AppSettings private constructor(context: Context) {
     private val _startInbox = MutableStateFlow(prefs.getBoolean("startInbox", false))
     private val _range = enumPref("range", DeskRange.WEEK, DeskRange.values())
     private val _unreadOnly = MutableStateFlow(prefs.getBoolean("unreadOnly", false))
+
+    private fun intPref(key: String, default: Int) = MutableStateFlow(prefs.getInt(key, default))
+    private fun boolPref(key: String, default: Boolean) = MutableStateFlow(prefs.getBoolean(key, default))
+
+    private val _swipeLeft = enumPref("swipeLeft", SwipeAction.TRASH, SwipeAction.values())
+    private val _swipeRight = enumPref("swipeRight", SwipeAction.TOGGLE_READ, SwipeAction.values())
+    private val _swipeUp = enumPref("swipeUp", SwipeAction.TRASH, SwipeAction.values())
+    private val _swipeDown = enumPref("swipeDown", SwipeAction.SNOOZE, SwipeAction.values())
+    private val _morning = intPref("snoozeMorning", 8)
+    private val _evening = intPref("snoozeEvening", 18)
+    private val _weekendDay = intPref("snoozeWeekendDay", java.util.Calendar.SATURDAY)
+    private val _snoozeUnread = boolPref("snoozeUnread", true)
+    private val _trusted = MutableStateFlow(prefs.getStringSet("trustedSenders", emptySet())!!.toSet())
+    private val _notifContent = enumPref("notifContent", NotificationContent.FULL, NotificationContent.values())
+    private val _quiet = boolPref("quiet", false)
+    private val _quietStart = intPref("quietStart", 22)
+    private val _quietEnd = intPref("quietEnd", 7)
+    private val _appLock = boolPref("appLock", false)
+    private val _linkCheck = enumPref("linkCheck", LinkCheck.ALWAYS, LinkCheck.values())
+
+    val swipeLeft: StateFlow<SwipeAction> = _swipeLeft.asStateFlow()
+    val swipeRight: StateFlow<SwipeAction> = _swipeRight.asStateFlow()
+    val swipeUp: StateFlow<SwipeAction> = _swipeUp.asStateFlow()
+    val swipeDown: StateFlow<SwipeAction> = _swipeDown.asStateFlow()
+    val snoozeMorning: StateFlow<Int> = _morning.asStateFlow()
+    val snoozeEvening: StateFlow<Int> = _evening.asStateFlow()
+    val snoozeWeekendDay: StateFlow<Int> = _weekendDay.asStateFlow()
+    val snoozeUnread: StateFlow<Boolean> = _snoozeUnread.asStateFlow()
+    val trustedSenders: StateFlow<Set<String>> = _trusted.asStateFlow()
+    val notificationContent: StateFlow<NotificationContent> = _notifContent.asStateFlow()
+    val quietHours: StateFlow<Boolean> = _quiet.asStateFlow()
+    val quietStart: StateFlow<Int> = _quietStart.asStateFlow()
+    val quietEnd: StateFlow<Int> = _quietEnd.asStateFlow()
+    val appLock: StateFlow<Boolean> = _appLock.asStateFlow()
+    val linkCheck: StateFlow<LinkCheck> = _linkCheck.asStateFlow()
+
+    private fun <E : Enum<E>> putEnum(key: String, flow: MutableStateFlow<E>, v: E) { prefs.edit().putString(key, v.name).apply(); flow.value = v }
+    private fun putInt(key: String, flow: MutableStateFlow<Int>, v: Int) { prefs.edit().putInt(key, v).apply(); flow.value = v }
+    private fun putBool(key: String, flow: MutableStateFlow<Boolean>, v: Boolean) { prefs.edit().putBoolean(key, v).apply(); flow.value = v }
+
+    fun setSwipeLeft(v: SwipeAction) = putEnum("swipeLeft", _swipeLeft, v)
+    fun setSwipeRight(v: SwipeAction) = putEnum("swipeRight", _swipeRight, v)
+    fun setSwipeUp(v: SwipeAction) = putEnum("swipeUp", _swipeUp, v)
+    fun setSwipeDown(v: SwipeAction) = putEnum("swipeDown", _swipeDown, v)
+    fun setSnoozeMorning(v: Int) = putInt("snoozeMorning", _morning, v)
+    fun setSnoozeEvening(v: Int) = putInt("snoozeEvening", _evening, v)
+    fun setSnoozeWeekendDay(v: Int) = putInt("snoozeWeekendDay", _weekendDay, v)
+    fun setSnoozeUnread(v: Boolean) = putBool("snoozeUnread", _snoozeUnread, v)
+    fun setNotificationContent(v: NotificationContent) = putEnum("notifContent", _notifContent, v)
+    fun setQuiet(v: Boolean) = putBool("quiet", _quiet, v)
+    fun setQuietStart(v: Int) = putInt("quietStart", _quietStart, v)
+    fun setQuietEnd(v: Int) = putInt("quietEnd", _quietEnd, v)
+    fun setAppLock(v: Boolean) = putBool("appLock", _appLock, v)
+    fun setLinkCheck(v: LinkCheck) = putEnum("linkCheck", _linkCheck, v)
+
+    fun isTrusted(email: String) = email.trim().lowercase() in _trusted.value
+    fun setTrusted(email: String, trusted: Boolean) {
+        val key = email.trim().lowercase()
+        if (key.isEmpty()) return
+        val next = if (trusted) _trusted.value + key else _trusted.value - key
+        prefs.edit().putStringSet("trustedSenders", next).apply()
+        _trusted.value = next
+    }
+
+    /** Liegt die aktuelle Uhrzeit in den Ruhezeiten? */
+    fun inQuietHours(now: java.util.Calendar = java.util.Calendar.getInstance()): Boolean {
+        if (!_quiet.value) return false
+        val h = now.get(java.util.Calendar.HOUR_OF_DAY)
+        val start = _quietStart.value
+        val end = _quietEnd.value
+        return if (start <= end) h in start until end else h >= start || h < end
+    }
 
     val theme: StateFlow<ThemeMode> = _theme.asStateFlow()
     val dynamicColor: StateFlow<Boolean> = _dynamic.asStateFlow()

@@ -87,6 +87,13 @@ import de.tedoki.amelia.ui.components.MorphFab
 import de.tedoki.amelia.ui.components.MorphLoader
 import de.tedoki.amelia.ui.components.Pill
 import de.tedoki.amelia.ui.components.SnoozeSheet
+import de.tedoki.amelia.ui.components.GlassSheet
+import de.tedoki.amelia.ui.components.SheetRow
+import de.tedoki.amelia.ui.components.SwipeVisual
+import de.tedoki.amelia.ui.components.swipeVisual
+import de.tedoki.amelia.ui.inbox.roleIcon
+import de.tedoki.amelia.ui.inbox.sortedFolders
+import de.tedoki.amelia.data.SwipeAction
 import de.tedoki.amelia.ui.theme.Brand
 import de.tedoki.amelia.ui.theme.glass
 import kotlin.math.abs
@@ -106,6 +113,10 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
     val showSnoozed by vm.deskSnoozed.collectAsState()
     val snoozedCount by vm.snoozedCount.collectAsState()
     var snoozeTarget by remember { mutableStateOf<Message?>(null) }
+    var moveTarget by remember { mutableStateOf<Message?>(null) }
+    val upAction by vm.settings.swipeUp.collectAsState()
+    val downAction by vm.settings.swipeDown.collectAsState()
+    val folders by vm.folders.collectAsState()
 
     LaunchedEffect(snoozedCount, showSnoozed) {
         if (showSnoozed && snoozedCount == 0) vm.setDeskSnoozed(false)
@@ -174,8 +185,18 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                         startIndex = if (searching) 0 else vm.deskIndex.value,
                         onIndex = { if (!searching) vm.setDeskIndex(it) },
                         onOpen = vm::open,
-                        onDelete = { vm.delete(listOf(it)) },
-                        onSnooze = { snoozeTarget = it }
+                        upAction = upAction,
+                        downAction = downAction,
+                        flyAway = { action, m -> vm.removes(action) && vm.swipeProblem(action, m) == null },
+                        onAction = { action, m ->
+                            val problem = vm.swipeProblem(action, m)
+                            when {
+                                problem != null -> vm.toast(problem)
+                                action == SwipeAction.SNOOZE -> snoozeTarget = m
+                                action == SwipeAction.MOVE -> moveTarget = m
+                                else -> vm.applySwipe(action, m)
+                            }
+                        }
                     )
                     }
                 }
@@ -189,6 +210,17 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                 onInbox = onOpenInbox,
                 onCompose = { vm.push(Screen.Compose(ComposeArgs())) }
             )
+        }
+
+        moveTarget?.let { m ->
+            GlassSheet("Verschieben nach", onDismiss = { moveTarget = null }) {
+                sortedFolders(folders.filter { it.accountId == m.accountId && it.id != m.folderId }).forEach { f ->
+                    SheetRow(roleIcon(f.role), f.name) {
+                        vm.move(listOf(m), f)
+                        moveTarget = null
+                    }
+                }
+            }
         }
 
         snoozeTarget?.let { m ->
@@ -240,8 +272,10 @@ private fun CardCarousel(
     startIndex: Int,
     onIndex: (Int) -> Unit,
     onOpen: (Message) -> Unit,
-    onDelete: (Message) -> Unit,
-    onSnooze: (Message) -> Unit
+    upAction: SwipeAction,
+    downAction: SwipeAction,
+    flyAway: (SwipeAction, Message) -> Boolean,
+    onAction: (SwipeAction, Message) -> Unit
 ) {
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, messages.lastIndex)) { messages.size }
     val scope = rememberCoroutineScope()
@@ -289,23 +323,27 @@ private fun CardCarousel(
                             detectVerticalDragGestures(
                                 onDragEnd = {
                                     scope.launch {
-                                        when {
-                                            drag.value < -threshold -> {
-                                                drag.animateTo(-size.height * 1.4f, tween(220))
-                                                onDelete(message)
-                                            }
-                                            drag.value > threshold -> {
-                                                drag.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
-                                                onSnooze(message)
-                                            }
-                                            else -> drag.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                                        val up = drag.value < -threshold
+                                        val action = when {
+                                            up -> upAction
+                                            drag.value > threshold -> downAction
+                                            else -> SwipeAction.NONE
+                                        }
+                                        if (action != SwipeAction.NONE && flyAway(action, message)) {
+                                            drag.animateTo(if (up) -size.height * 1.4f else size.height * 1.4f, tween(220))
+                                            onAction(action, message)
+                                        } else {
+                                            drag.animateTo(0f, spring(Spring.DampingRatioMediumBouncy))
+                                            if (action != SwipeAction.NONE) onAction(action, message)
                                         }
                                     }
                                 },
                                 onDragCancel = { scope.launch { drag.animateTo(0f, spring()) } },
                                 onVerticalDrag = { change, amount ->
                                     change.consume()
-                                    scope.launch { drag.snapTo(drag.value + amount * if (drag.value > 0) 0.6f else 1f) }
+                                    val target = if (drag.value + amount < 0) upAction else downAction
+                                    val resistance = if (target == SwipeAction.NONE) 0.2f else if (drag.value > 0) 0.7f else 1f
+                                    scope.launch { drag.snapTo(drag.value + amount * resistance) }
                                     val past = abs(drag.value) > threshold
                                     if (past != armed) {
                                         armed = past
@@ -319,6 +357,8 @@ private fun CardCarousel(
                         message = message,
                         account = accounts[message.accountId],
                         dragProgress = (drag.value / threshold).coerceIn(-1.5f, 1.5f),
+                        upVisual = swipeVisual(upAction, message.seen, message.flagged),
+                        downVisual = swipeVisual(downAction, message.seen, message.flagged),
                         onClick = {
                             if (isCurrent) onOpen(message) else scope.launch { pager.animateScrollToPage(page) }
                         }
@@ -336,13 +376,20 @@ private fun CardCarousel(
 }
 
 @Composable
-private fun MailCard(message: Message, account: Account?, dragProgress: Float, onClick: () -> Unit) {
+private fun MailCard(
+    message: Message,
+    account: Account?,
+    dragProgress: Float,
+    upVisual: SwipeVisual?,
+    downVisual: SwipeVisual?,
+    onClick: () -> Unit
+) {
     val scheme = MaterialTheme.colorScheme
     val deleteTint = (-dragProgress).coerceIn(0f, 1f)
     val snoozeTint = dragProgress.coerceIn(0f, 1f)
     val tint = when {
-        deleteTint > 0f -> Brand.Coral.copy(alpha = deleteTint)
-        snoozeTint > 0f -> Brand.Spark.copy(alpha = snoozeTint)
+        deleteTint > 0f && upVisual != null -> upVisual.color.copy(alpha = deleteTint)
+        snoozeTint > 0f && downVisual != null -> downVisual.color.copy(alpha = snoozeTint)
         else -> Color.Unspecified
     }
     Box(
@@ -418,21 +465,22 @@ private fun MailCard(message: Message, account: Account?, dragProgress: Float, o
             }
         }
         // Hinweis während des Wischens
-        if (deleteTint > 0.15f || snoozeTint > 0.15f) {
-            val deleting = deleteTint > snoozeTint
+        val activeVisual = if (deleteTint > snoozeTint) upVisual else downVisual
+        if ((deleteTint > 0.15f || snoozeTint > 0.15f) && activeVisual != null) {
+            val upwards = deleteTint > snoozeTint
             Row(
                 Modifier
-                    .align(if (deleting) Alignment.BottomCenter else Alignment.TopCenter)
+                    .align(if (upwards) Alignment.BottomCenter else Alignment.TopCenter)
                     .padding(18.dp)
                     .alpha(maxOf(deleteTint, snoozeTint).coerceIn(0f, 1f))
                     .clip(RoundedCornerShape(50))
-                    .background(if (deleting) Brand.Coral else Brand.Spark)
+                    .background(activeVisual.color)
                     .padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(if (deleting) Icons.Outlined.DeleteOutline else Icons.Outlined.Schedule, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Icon(activeVisual.icon, null, tint = Color.White, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(if (deleting) "Papierkorb" else "Später", color = Color.White, fontWeight = FontWeight.Bold)
+                Text(activeVisual.label, color = Color.White, fontWeight = FontWeight.Bold)
             }
         }
     }

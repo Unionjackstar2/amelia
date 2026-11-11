@@ -15,7 +15,7 @@ import java.util.Locale
  */
 class Pop3Connection(private val config: ServerConfig) : Closeable {
 
-    private val socket = MailSocket(config.host, config.port, config.security)
+    private val socket = MailSocket(config.host, config.port, config.security, config.pinned)
     private var capabilities: Set<String> = emptySet()
 
     fun open() {

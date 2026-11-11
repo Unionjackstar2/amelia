@@ -305,6 +305,29 @@ object MimeUtil {
         return result
     }
 
+    // ---------------------------------------------------------------- Absender-Echtheit
+
+    /**
+     * Wertet die oberste "Authentication-Results"-Kopfzeile aus, die der eigene Mailserver
+     * beim Empfang einträgt (SPF, DKIM, DMARC). Ergebnis: "pass", "fail" oder "" (unbekannt).
+     */
+    fun authResult(header: String?): String {
+        if (header.isNullOrBlank()) return ""
+        val h = header.lowercase(Locale.US)
+        fun result(method: String): String? =
+            Regex("(^|[\\s;])$method\\s*=\\s*([a-z]+)").find(h)?.groupValues?.get(2)
+        val dmarc = result("dmarc")
+        val dkim = result("dkim")
+        val spf = result("spf")
+        return when {
+            dmarc == "fail" -> "fail"
+            dmarc == "pass" -> "pass"
+            dkim in setOf("fail", "neutral", "permerror") && spf in setOf("fail", "softfail") -> "fail"
+            dkim == null && spf == "fail" -> "fail"
+            else -> ""
+        }
+    }
+
     // ---------------------------------------------------------------- Adressen
 
     fun parseAddressList(header: String?): List<Address> {

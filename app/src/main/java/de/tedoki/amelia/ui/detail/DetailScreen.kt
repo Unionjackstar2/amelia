@@ -57,6 +57,7 @@ import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Shortcut
 import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material.icons.rounded.Star
@@ -65,6 +66,9 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
+import de.tedoki.amelia.data.LinkCheck
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -128,6 +132,9 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
     val accounts by vm.accounts.collectAsState()
     val folders by vm.folders.collectAsState()
     val alwaysImages by vm.settings.loadImages.collectAsState()
+    val trusted by vm.settings.trustedSenders.collectAsState()
+    val linkCheck by vm.settings.linkCheck.collectAsState()
+    var pendingLink by remember { mutableStateOf<LinkRequest?>(null) }
     var content by remember(messageId) { mutableStateOf<MessageContent?>(null) }
     var error by remember(messageId) { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableStateOf(0) }
@@ -153,6 +160,15 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
         return
     }
     val account = accounts?.firstOrNull { it.id == m.accountId }
+    val senderWarnings = remember(m.id, m.fromName, m.fromEmail, m.authResult) { LinkSafety.senderWarnings(m) }
+    val handleLink: (LinkRequest) -> Unit = { link ->
+        val suspicious = LinkSafety.warnings(link).isNotEmpty() || senderWarnings.isNotEmpty()
+        when {
+            linkCheck == LinkCheck.ALWAYS -> pendingLink = link
+            linkCheck == LinkCheck.SUSPICIOUS && suspicious -> pendingLink = link
+            else -> openUrl(context, link.url)
+        }
+    }
     val inTrash = folders.firstOrNull { it.id == m.folderId }?.role == FolderRole.TRASH
 
     // Platz, den die schwebende Aktionsleiste unten belegt
@@ -198,13 +214,29 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(m.senderDisplay, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    // Die echte Adresse ist immer sichtbar
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (m.authResult == "pass") {
+                            Icon(Icons.Outlined.VerifiedUser, "Absender vom Mailanbieter bestätigt",
+                                tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            m.fromEmail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (senderWarnings.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (senderWarnings.isNotEmpty()) FontWeight.Bold else null,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Text(
-                        if (showDetails) m.fromEmail else Fmt.short(m.date) + if (Fmt.short(m.date).contains(':')) "" else ", " + Fmt.timeOnly(m.date),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Fmt.short(m.date) + if (Fmt.short(m.date).contains(':')) "" else ", " + Fmt.timeOnly(m.date),
+                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 account?.let { AccountDot(it.color, size = 10.dp) }
             }
+            SenderWarningCard(senderWarnings)
             if (showDetails) {
                 Spacer(Modifier.height(10.dp))
                 DetailLine("Datum", Fmt.long(m.date))
@@ -250,20 +282,31 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 }
                 c == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { MorphLoader() }
                 c.html != null -> {
-                    val allowImages = alwaysImages || showImages
+                    val allowImages = alwaysImages || showImages || m.fromEmail.lowercase() in trusted
                     val hasRemote = remember(c.html) { REMOTE_IMAGE.containsMatchIn(c.html) }
                     Column(Modifier.fillMaxSize()) {
                         if (hasRemote && !allowImages) {
-                            Row(
+                            Column(
                                 Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(18.dp))
                                     .background(MaterialTheme.colorScheme.tertiaryContainer)
-                                    .clickable { showImages = true }.padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                                    .padding(start = 14.dp, end = 6.dp, top = 10.dp, bottom = 2.dp)
                             ) {
-                                Icon(Icons.Outlined.Image, null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text("Externe Bilder sind blockiert (Schutz vor Tracking). Tippen zum Laden.",
-                                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Outlined.Image, null, tint = MaterialTheme.colorScheme.onTertiaryContainer, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Externe Bilder sind blockiert (Schutz vor Tracking).",
+                                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                }
+                                Row {
+                                    TextButton(onClick = { showImages = true }) {
+                                        Text("Einmal laden", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                                    }
+                                    if (m.fromEmail.isNotBlank() && senderWarnings.isEmpty()) {
+                                        TextButton(onClick = { vm.settings.setTrusted(m.fromEmail, true) }) {
+                                            Text("Immer von diesem Absender", color = MaterialTheme.colorScheme.onTertiaryContainer, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
                             }
                         }
                         // HTML immer auf hellem Briefbogen, damit Newsletter lesbar bleiben
@@ -273,7 +316,8 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                                 allowImages = allowImages,
                                 bottomPadding = (barSpace.value + 16).toInt(),
                                 resolveCid = { cid -> vm.repo.inlineImage(m.id, cid) },
-                                onMailto = { to -> vm.push(Screen.Compose(ComposeArgs(ComposeMode.NEW, to = to))) }
+                                onMailto = { to -> vm.push(Screen.Compose(ComposeArgs(ComposeMode.NEW, to = to))) },
+                                onLink = handleLink
                             )
                         }
                     }
@@ -281,7 +325,9 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 else -> Box(Modifier.fillMaxSize().glass(RoundedCornerShape(26.dp))) {
                     SelectionContainer {
                         Text(
-                            plainTextAnnotated(c.text.orEmpty(), MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.primary),
+                            plainTextAnnotated(c.text.orEmpty(), MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.primary) { url ->
+                                handleLink(LinkRequest(url, null))
+                            },
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
                                 .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 18.dp + barSpace)
@@ -307,6 +353,10 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 vm.pop()
             }
         }
+    }
+
+    pendingLink?.let { link ->
+        LinkDialog(link, onOpen = { pendingLink = null; openUrl(context, link.url) }, onDismiss = { pendingLink = null })
     }
 
     if (snooze) {
@@ -383,7 +433,7 @@ private val URL = Regex("(https?://[^\\s<>\"')\\]]+)")
 private val REMOTE_IMAGE = Regex("(?i)(<img[^>]+src\\s*=\\s*[\"']?\\s*https?:|background\\s*=\\s*[\"']?https?:|url\\(\\s*[\"']?https?:)")
 
 @OptIn(ExperimentalTextApi::class)
-private fun plainTextAnnotated(text: String, quoteColor: Color, linkColor: Color): AnnotatedString = buildAnnotatedString {
+private fun plainTextAnnotated(text: String, quoteColor: Color, linkColor: Color, onLink: (String) -> Unit): AnnotatedString = buildAnnotatedString {
     text.lines().forEachIndexed { i, line ->
         if (i > 0) append('\n')
         val quoted = line.trimStart().startsWith(">")
@@ -391,7 +441,13 @@ private fun plainTextAnnotated(text: String, quoteColor: Color, linkColor: Color
         var last = 0
         for (mt in URL.findAll(line)) {
             append(line.substring(last, mt.range.first))
-            withLink(LinkAnnotation.Url(mt.value, TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)))) {
+            val url = mt.value
+            withLink(
+                LinkAnnotation.Clickable(
+                    url,
+                    TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
+                ) { onLink(url) }
+            ) {
                 append(mt.value)
             }
             last = mt.range.last + 1
@@ -430,9 +486,10 @@ private fun MailWebView(
     allowImages: Boolean,
     bottomPadding: Int,
     resolveCid: suspend (String) -> Pair<String, ByteArray>?,
-    onMailto: (String) -> Unit
+    onMailto: (String) -> Unit,
+    onLink: (LinkRequest) -> Unit
 ) {
-    val prepared = remember(html, bottomPadding) { prepareHtml(html, bottomPadding) }
+    val prepared = remember(html, bottomPadding) { LinkSafety.rewriteAnchors(prepareHtml(html, bottomPadding)) }
     val key = "${prepared.hashCode()}_$allowImages"
     AndroidView(
         modifier = Modifier.fillMaxSize(),
@@ -467,10 +524,12 @@ private fun MailWebView(
 
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         val url = request.url
-                        if (url.scheme.equals("mailto", true)) {
-                            onMailto(url.schemeSpecificPart.substringBefore('?'))
-                        } else {
-                            openUrl(view.context, url.toString())
+                        val rewritten = LinkSafety.parse(url)
+                        when {
+                            rewritten != null -> onLink(rewritten)
+                            url.scheme.equals("mailto", true) -> onMailto(url.schemeSpecificPart.substringBefore('?'))
+                            url.scheme.equals("http", true) || url.scheme.equals("https", true) -> onLink(LinkRequest(url.toString(), null))
+                            else -> {}
                         }
                         return true
                     }

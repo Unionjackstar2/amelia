@@ -26,6 +26,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.MarkEmailRead
+import androidx.compose.material.icons.outlined.MarkEmailUnread
+import androidx.compose.material.icons.outlined.Report
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.StarOutline
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -291,4 +300,27 @@ fun EmptyState(
 @Composable
 fun AccountDot(color: Int, modifier: Modifier = Modifier, size: Dp = 8.dp) {
     Box(modifier.size(size).clip(CircleShape).background(Color(color)))
+}
+
+// ------------------------------------------------------------------ Wischaktionen
+
+/** Farbe, Symbol und Beschriftung einer Wischaktion. */
+data class SwipeVisual(val label: String, val icon: ImageVector, val color: Color)
+
+fun swipeVisual(action: de.tedoki.amelia.data.SwipeAction, seen: Boolean = true, flagged: Boolean = false): SwipeVisual? = when (action) {
+    de.tedoki.amelia.data.SwipeAction.TRASH -> SwipeVisual("Papierkorb", Icons.Outlined.DeleteOutline, Color(0xFFE5534B))
+    de.tedoki.amelia.data.SwipeAction.ARCHIVE -> SwipeVisual("Archivieren", Icons.Outlined.Archive, Color(0xFF4A7A5C))
+    de.tedoki.amelia.data.SwipeAction.SNOOZE -> SwipeVisual("Später", Icons.Outlined.Schedule, Color(0xFFE0A030))
+    de.tedoki.amelia.data.SwipeAction.TOGGLE_READ -> SwipeVisual(
+        if (seen) "Ungelesen" else "Gelesen",
+        if (seen) Icons.Outlined.MarkEmailUnread else Icons.Outlined.MarkEmailRead,
+        Color(0xFF2A4C8C)
+    )
+    de.tedoki.amelia.data.SwipeAction.FLAG -> SwipeVisual(
+        if (flagged) "Markierung weg" else "Markieren",
+        Icons.Outlined.StarOutline, Color(0xFFC98A1E)
+    )
+    de.tedoki.amelia.data.SwipeAction.SPAM -> SwipeVisual("Spam", Icons.Outlined.Report, Color(0xFF8A5A3C))
+    de.tedoki.amelia.data.SwipeAction.MOVE -> SwipeVisual("Verschieben", Icons.Outlined.Folder, Color(0xFF5B6B9E))
+    de.tedoki.amelia.data.SwipeAction.NONE -> null
 }

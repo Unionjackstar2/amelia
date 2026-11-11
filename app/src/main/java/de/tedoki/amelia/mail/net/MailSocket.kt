@@ -16,6 +16,12 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
 import javax.net.ssl.SSLHandshakeException
 import javax.net.ssl.SSLSocket
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
 
 enum class Security { SSL_TLS, STARTTLS, NONE }
 
@@ -25,7 +31,29 @@ data class ServerConfig(
     val port: Int,
     val security: Security,
     val username: String,
-    val password: String
+    val password: String,
+    /** SHA-256-Fingerabdrücke von Zertifikaten, denen der Nutzer ausdrücklich vertraut (eigene Server). */
+    val pinned: Set<String> = emptySet()
+)
+
+/** Angaben zu einem Zertifikat, das nicht automatisch vertrauenswürdig ist. */
+data class CertificateInfo(
+    val host: String,
+    val port: Int,
+    val fingerprint: String,
+    val subject: String,
+    val issuer: String,
+    val validFrom: java.util.Date,
+    val validUntil: java.util.Date,
+    val selfSigned: Boolean,
+    val hostnameMismatch: Boolean
+)
+
+/** Der Server zeigt ein Zertifikat, dem Android nicht vertraut. Der Nutzer kann es bestätigen. */
+class CertificateUntrustedException(val info: CertificateInfo) : MailException(
+    if (info.hostnameMismatch) "Das Zertifikat von ${info.host} passt nicht zum Servernamen."
+    else "Das Zertifikat von ${info.host} ist nicht von einer bekannten Stelle bestätigt.",
+    kind = MailException.Kind.TLS
 )
 
 open class MailException(
@@ -55,6 +83,7 @@ class MailSocket(
     private val host: String,
     private val port: Int,
     private val security: Security,
+    private val pinned: Set<String> = emptySet(),
     private val connectTimeoutMs: Int = 20_000,
     readTimeoutMs: Int = 60_000
 ) : Closeable {
@@ -97,18 +126,31 @@ class MailSocket(
 
     private fun wrapTls(plain: Socket): SSLSocket {
         val override = tlsOverride
-        val ssl = if (override != null) {
-            override(plain, host, port)
-        } else {
-            val context = SSLContext.getInstance("TLS").apply { init(null, null, null) }
-            (context.socketFactory.createSocket(plain, host, port, true) as SSLSocket)
+        if (override != null) {
+            return override(plain, host, port).also {
+                it.soTimeout = readTimeoutMs
+                it.startHandshake()
+            }
         }
+        val trust = PinningTrustManager(pinned)
+        val context = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
+        val ssl = context.socketFactory.createSocket(plain, host, port, true) as SSLSocket
         ssl.soTimeout = readTimeoutMs
-        ssl.startHandshake()
-        if (override == null) {
-            val verifier = HttpsURLConnection.getDefaultHostnameVerifier()
+        try {
+            ssl.startHandshake()
+        } catch (e: SSLException) {
+            try { ssl.close() } catch (_: Exception) {}
+            val chain = trust.rejectedChain
+            if (chain != null && chain.isNotEmpty()) throw CertificateUntrustedException(describe(chain, hostnameMismatch = false))
+            throw e
+        }
+        // Vom Nutzer bestätigtes Zertifikat: Name muss nicht passen (typisch bei eigenen Servern)
+        if (!trust.pinMatched) {
+            val verifier = hostnameVerifier ?: HttpsURLConnection.getDefaultHostnameVerifier()
             if (!verifier.verify(host, ssl.session)) {
+                val chain = trust.lastChain
                 try { ssl.close() } catch (_: Exception) {}
+                if (chain != null && chain.isNotEmpty()) throw CertificateUntrustedException(describe(chain, hostnameMismatch = true))
                 throw MailException(
                     "Das Zertifikat gehört nicht zu $host. Verbindung aus Sicherheitsgründen abgebrochen.",
                     kind = MailException.Kind.TLS
@@ -116,6 +158,21 @@ class MailSocket(
             }
         }
         return ssl
+    }
+
+    private fun describe(chain: Array<X509Certificate>, hostnameMismatch: Boolean): CertificateInfo {
+        val leaf = chain[0]
+        return CertificateInfo(
+            host = host,
+            port = port,
+            fingerprint = fingerprint(leaf),
+            subject = leaf.subjectX500Principal.name,
+            issuer = leaf.issuerX500Principal.name,
+            validFrom = leaf.notBefore,
+            validUntil = leaf.notAfter,
+            selfSigned = leaf.subjectX500Principal == leaf.issuerX500Principal,
+            hostnameMismatch = hostnameMismatch
+        )
     }
 
     private fun bindStreams() {
@@ -182,5 +239,45 @@ class MailSocket(
         /** Nur für Tests: ersetzt den TLS-Aufbau (z. B. für selbstsignierte Testserver). */
         @Volatile
         var tlsOverride: ((Socket, String, Int) -> SSLSocket)? = null
+
+        /** Nur für Tests: ersetzt die Prüfung des Servernamens. */
+        @Volatile
+        var hostnameVerifier: javax.net.ssl.HostnameVerifier? = null
+
+        fun fingerprint(cert: X509Certificate): String =
+            MessageDigest.getInstance("SHA-256").digest(cert.encoded).joinToString(":") { "%02X".format(it) }
     }
+}
+
+/**
+ * Prüft Zertifikate wie Android selbst. Zusätzlich gelten Zertifikate als vertrauenswürdig,
+ * deren Fingerabdruck der Nutzer ausdrücklich bestätigt hat.
+ */
+private class PinningTrustManager(private val pinned: Set<String>) : X509TrustManager {
+    private val system: X509TrustManager = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+        .apply { init(null as KeyStore?) }
+        .trustManagers.first { it is X509TrustManager } as X509TrustManager
+
+    @Volatile var pinMatched = false
+    @Volatile var rejectedChain: Array<X509Certificate>? = null
+    @Volatile var lastChain: Array<X509Certificate>? = null
+
+    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+        lastChain = chain
+        if (chain.isNotEmpty() && MailSocket.fingerprint(chain[0]) in pinned) {
+            pinMatched = true
+            return
+        }
+        try {
+            system.checkServerTrusted(chain, authType)
+        } catch (e: CertificateException) {
+            rejectedChain = chain
+            throw e
+        }
+    }
+
+    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) =
+        system.checkClientTrusted(chain, authType)
+
+    override fun getAcceptedIssuers(): Array<X509Certificate> = system.acceptedIssuers
 }

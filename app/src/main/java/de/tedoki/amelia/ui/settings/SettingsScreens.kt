@@ -34,6 +34,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.BatteryChargingFull
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -65,16 +66,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import de.tedoki.amelia.BuildConfig
 import de.tedoki.amelia.R
+import de.tedoki.amelia.data.LinkCheck
+import de.tedoki.amelia.data.NotificationContent
+import de.tedoki.amelia.data.SwipeAction
 import de.tedoki.amelia.data.SyncMode
 import de.tedoki.amelia.data.ThemeMode
 import de.tedoki.amelia.data.db.Account
+import de.tedoki.amelia.data.db.Identity
 import de.tedoki.amelia.data.db.Protocol
+import de.tedoki.amelia.data.db.encodeIdentities
+import de.tedoki.amelia.mail.net.CertificateInfo
 import de.tedoki.amelia.mail.Provider
 import de.tedoki.amelia.mail.Providers
 import de.tedoki.amelia.mail.mime.MimeUtil
@@ -152,6 +160,22 @@ fun SettingsScreen(vm: AmeliaViewModel) {
     val context = LocalContext.current
     val pm = context.getSystemService(PowerManager::class.java)
     val unrestricted = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+    val swipeLeft by vm.settings.swipeLeft.collectAsState()
+    val swipeRight by vm.settings.swipeRight.collectAsState()
+    val swipeUp by vm.settings.swipeUp.collectAsState()
+    val swipeDown by vm.settings.swipeDown.collectAsState()
+    val snoozeMorning by vm.settings.snoozeMorning.collectAsState()
+    val snoozeEvening by vm.settings.snoozeEvening.collectAsState()
+    val weekendDay by vm.settings.snoozeWeekendDay.collectAsState()
+    val snoozeUnread by vm.settings.snoozeUnread.collectAsState()
+    val notifContent by vm.settings.notificationContent.collectAsState()
+    val quiet by vm.settings.quietHours.collectAsState()
+    val quietStart by vm.settings.quietStart.collectAsState()
+    val quietEnd by vm.settings.quietEnd.collectAsState()
+    val appLock by vm.settings.appLock.collectAsState()
+    val linkCheck by vm.settings.linkCheck.collectAsState()
+    val trusted by vm.settings.trustedSenders.collectAsState()
+    var showTrusted by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         TopBar("Einstellungen") { vm.pop() }
@@ -217,6 +241,63 @@ fun SettingsScreen(vm: AmeliaViewModel) {
                 }
             }
 
+            Section("Gesten") {
+                PickerRow("Posteingang: nach links wischen", swipeLeft, SwipeAction.values().toList(), { it.label }) { vm.settings.setSwipeLeft(it) }
+                PickerRow("Posteingang: nach rechts wischen", swipeRight, SwipeAction.values().toList(), { it.label }) { vm.settings.setSwipeRight(it) }
+                PickerRow("Karten: nach oben wischen", swipeUp, SwipeAction.values().toList(), { it.label }) { vm.settings.setSwipeUp(it) }
+                PickerRow("Karten: nach unten wischen", swipeDown, SwipeAction.values().toList(), { it.label }) { vm.settings.setSwipeDown(it) }
+            }
+
+            Section("Parken") {
+                PickerRow("„Morgen früh“ um", snoozeMorning, (5..11).toList(), { "%02d:00 Uhr".format(it) }) { vm.settings.setSnoozeMorning(it) }
+                PickerRow("„Heute Abend“ um", snoozeEvening, (15..22).toList(), { "%02d:00 Uhr".format(it) }) { vm.settings.setSnoozeEvening(it) }
+                PickerRow("Wochenende beginnt am", weekendDay, listOf(java.util.Calendar.SATURDAY, java.util.Calendar.SUNDAY),
+                    { if (it == java.util.Calendar.SATURDAY) "Samstag" else "Sonntag" }) { vm.settings.setSnoozeWeekendDay(it) }
+                SwitchRow("Als ungelesen zurückholen", "Zurückgekehrte Mails wieder als ungelesen markieren", snoozeUnread) { vm.settings.setSnoozeUnread(it) }
+            }
+
+            Section("Benachrichtigungen") {
+                PickerRow("Inhalt", notifContent, NotificationContent.values().toList(), { it.label }) { vm.settings.setNotificationContent(it) }
+                SwitchRow("Ruhezeiten", "In dieser Zeit ohne Ton und Vibration", quiet) { vm.settings.setQuiet(it) }
+                if (quiet) {
+                    PickerRow("Ruhe ab", quietStart, (0..23).toList(), { "%02d:00 Uhr".format(it) }) { vm.settings.setQuietStart(it) }
+                    PickerRow("Ruhe bis", quietEnd, (0..23).toList(), { "%02d:00 Uhr".format(it) }) { vm.settings.setQuietEnd(it) }
+                }
+                Row(
+                    Modifier.fillMaxWidth().clickable {
+                        try {
+                            context.startActivity(
+                                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            )
+                        } catch (_: Exception) {
+                        }
+                    }.padding(horizontal = 18.dp, vertical = 14.dp)
+                ) {
+                    Column {
+                        Text("Töne und Vibration", style = MaterialTheme.typography.titleMedium)
+                        Text("In den Android-Einstellungen festlegen", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            Section("Sicherheit") {
+                SwitchRow("App-Sperre", "Beim Öffnen per Fingerabdruck, Gesicht oder Displaysperre entsperren", appLock) { on ->
+                    if (on) {
+                        val bm = androidx.biometric.BiometricManager.from(context)
+                        val allowed = androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                            androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                        if (bm.canAuthenticate(allowed) == androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS) {
+                            vm.settings.setAppLock(true)
+                        } else {
+                            vm.toast("Bitte zuerst eine Displaysperre (PIN, Muster oder Fingerabdruck) einrichten.")
+                        }
+                    } else {
+                        vm.settings.setAppLock(false)
+                    }
+                }
+                PickerRow("Links in Mails", linkCheck, LinkCheck.values().toList(), { it.label }) { vm.settings.setLinkCheck(it) }
+            }
+
             Section("Darstellung") {
                 ThemeMode.values().forEach { t -> ChoiceRow(t.label, t == theme) { vm.setTheme(t) } }
                 if (Build.VERSION.SDK_INT >= 31) {
@@ -231,6 +312,20 @@ fun SettingsScreen(vm: AmeliaViewModel) {
                     "Bilder aus dem Internet können verraten, dass eine Mail geöffnet wurde.",
                     images, vm::setLoadImages
                 )
+                if (!images) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { showTrusted = true }.padding(horizontal = 18.dp, vertical = 14.dp)
+                    ) {
+                        Column {
+                            Text("Vertraute Absender", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (trusted.isEmpty()) "Noch keine – in einer Mail „Immer von diesem Absender“ wählen"
+                                else "Bilder werden von ${trusted.size} Absender(n) geladen",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
             }
 
             Section("Über Amelia") {
@@ -246,6 +341,57 @@ fun SettingsScreen(vm: AmeliaViewModel) {
             }
             Spacer(Modifier.navigationBarsPadding().height(24.dp))
         }
+    }
+    if (showTrusted) TrustedSendersSheet(vm, trusted) { showTrusted = false }
+}
+
+@Composable
+private fun TrustedSendersSheet(vm: AmeliaViewModel, trusted: Set<String>, onDismiss: () -> Unit) {
+    de.tedoki.amelia.ui.components.GlassSheet("Vertraute Absender", onDismiss) {
+        if (trusted.isEmpty()) {
+            Text("Keine Einträge.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        trusted.sorted().forEach { email ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(email, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = { vm.settings.setTrusted(email, false) }) { Text("Entfernen", color = Brand.Coral) }
+            }
+        }
+    }
+}
+
+/** Zeile mit aktuellem Wert; ein Tipp öffnet die Auswahl. */
+@Composable
+private fun <T> PickerRow(title: String, value: T, options: List<T>, label: (T) -> String, onPick: (T) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth().clickable { open = true }.padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Spacer(Modifier.width(12.dp))
+        Text(label(value), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+    }
+    if (open) {
+        AlertDialog(
+            onDismissRequest = { open = false },
+            title = { Text(title) },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    options.forEach { option ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { onPick(option); open = false }
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(label(option), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                            if (option == value) Icon(Icons.Outlined.Check, null, tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { open = false }) { Text("Schließen") } }
+        )
     }
 }
 
@@ -328,11 +474,18 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
     var provider by remember { mutableStateOf<Provider?>(null) }
+    var gmailMode by rememberSaveable { mutableStateOf(false) }
+    var pinned by rememberSaveable { mutableStateOf(existing?.pinnedCerts ?: "") }
+    var notify by rememberSaveable { mutableStateOf(existing?.notify ?: true) }
+    var identities by rememberSaveable { mutableStateOf(existing?.identities ?: "") }
+    var certificate by remember { mutableStateOf<CertificateInfo?>(null) }
+    val context = LocalContext.current
 
     BackHandler { if (isNew && step == 2) step = 1 else vm.pop() }
 
     fun applyProvider() {
-        val p = Providers.forEmail(email) ?: Providers.guess(email)
+        val p = (if (gmailMode) Providers.all.first { it.name == "Gmail" } else null)
+            ?: Providers.forEmail(email) ?: Providers.guess(email)
         provider = p
         hint = p.hint
         val preset = if (protocol == Protocol.POP3 && p.pop3 != null) p.pop3 else p.imap
@@ -363,7 +516,10 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
         sortOrder = existing?.sortOrder ?: 0,
         lastSync = existing?.lastSync ?: 0,
         lastError = null,
-        supportsIdle = existing?.supportsIdle ?: false
+        supportsIdle = existing?.supportsIdle ?: false,
+        pinnedCerts = pinned,
+        identities = identities,
+        notify = notify
     )
 
     fun save(force: Boolean) {
@@ -374,10 +530,10 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
             scope.launch {
                 val result = vm.testAccount(a, password.ifEmpty { null }, outPassword.ifEmpty { null })
                 testing = false
-                if (result == null) {
-                    vm.saveAccount(a, password.ifEmpty { null }, if (outPassword.isEmpty() && existing == null) null else outPassword.ifEmpty { null }) { vm.pop() }
-                } else {
-                    error = result
+                when {
+                    result.certificate != null -> certificate = result.certificate
+                    result.error != null -> error = result.error
+                    else -> vm.saveAccount(a, password.ifEmpty { null }, if (outPassword.isEmpty() && existing == null) null else outPassword.ifEmpty { null }) { vm.pop() }
                 }
             }
         } else {
@@ -392,10 +548,15 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
             if (step == 1) {
-                Section("Zugangsdaten") {
+                if (!gmailMode) {
+                    GmailButton { gmailMode = true; error = null }
+                } else {
+                    GmailGuide(onOpen = { openLink(context, "https://myaccount.google.com/apppasswords") }, onCancel = { gmailMode = false })
+                }
+                Section(if (gmailMode) "Gmail-Zugang" else "Zugangsdaten") {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         Input("E-Mail-Adresse", email, { email = it.trim() }, KeyboardType.Email)
-                        PasswordInput("Passwort", password, showPassword, { password = it }) { showPassword = !showPassword }
+                        PasswordInput(if (gmailMode) "App-Passwort (16 Zeichen)" else "Passwort", password, showPassword, { password = it.let { p -> if (gmailMode) p.replace(" ", "") else p } }) { showPassword = !showPassword }
                         Input("Dein Name (für Empfänger)", name, { name = it })
                     }
                 }
@@ -489,6 +650,21 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
                         }
                     }
                 }
+                Section("Weitere Absenderadressen") {
+                    IdentityEditor(identities) { identities = it }
+                }
+                Section("Benachrichtigungen") {
+                    SwitchRow("Neue Mails melden", "Für dieses Konto Benachrichtigungen zeigen", notify) { notify = it }
+                }
+                if (pinned.isNotBlank()) {
+                    Section("Bestätigte Zertifikate") {
+                        Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp)) {
+                            Text("Du hast ${pinned.lines().count { it.isNotBlank() }} Zertifikat(e) dieses Servers ausdrücklich bestätigt.",
+                                style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = { pinned = "" }) { Text("Bestätigungen zurücksetzen", color = Brand.Coral) }
+                        }
+                    }
+                }
                 Section("Signatur") {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         OutlinedTextField(
@@ -522,6 +698,18 @@ fun AccountEditorScreen(vm: AmeliaViewModel, accountId: Long?) {
             }
             Spacer(Modifier.navigationBarsPadding().height(32.dp))
         }
+    }
+
+    certificate?.let { cert ->
+        CertificateDialog(
+            cert,
+            onTrust = {
+                pinned = (pinned.lines().filter { it.isNotBlank() } + cert.fingerprint).distinct().joinToString("\n")
+                certificate = null
+                save(force = false)
+            },
+            onDismiss = { certificate = null; error = "Zertifikat nicht bestätigt – Verbindung nicht möglich." }
+        )
     }
 
     if (confirmDelete && existing != null) {
@@ -586,14 +774,34 @@ private fun PasswordInput(label: String, value: String, visible: Boolean, onChan
 
 @Composable
 private fun SecurityPicker(value: Security, onChange: (Security) -> Unit) {
+    var confirmNone by remember { mutableStateOf(false) }
     Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Pill("SSL/TLS", value == Security.SSL_TLS) { onChange(Security.SSL_TLS) }
         Pill("STARTTLS", value == Security.STARTTLS) { onChange(Security.STARTTLS) }
-        Pill("Keine", value == Security.NONE) { onChange(Security.NONE) }
+        Pill("Keine", value == Security.NONE) { if (value != Security.NONE) confirmNone = true }
     }
     AnimatedVisibility(value == Security.NONE) {
         Text("Ohne Verschlüsselung werden Passwort und Mails lesbar übertragen.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+    }
+    if (confirmNone) {
+        AlertDialog(
+            onDismissRequest = { confirmNone = false },
+            icon = { Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("Wirklich ohne Verschlüsselung?") },
+            text = {
+                Text(
+                    "Passwort und alle Mails gehen dann lesbar durchs Netz – jeder im selben WLAN kann mitlesen. " +
+                        "Das ist nur in einem abgeschotteten Heimnetz vertretbar."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmNone = false; onChange(Security.NONE) }) {
+                    Text("Ohne Verschlüsselung", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmNone = false }) { Text("Abbrechen") } }
+        )
     }
 }
 
@@ -602,5 +810,157 @@ private fun SwitchLine(title: String, checked: Boolean, onChange: (Boolean) -> U
     Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         Switch(checked, onChange)
+    }
+}
+
+// ===================================================================== Gmail, Zertifikate, Identitäten
+
+private fun openLink(context: android.content.Context, url: String) {
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: Exception) {
+    }
+}
+
+@Composable
+private fun GmailButton(onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 12.dp).glass(RoundedCornerShape(26.dp)).clickable(onClick = onClick).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(Color.White),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("G", fontWeight = FontWeight.Black, color = Color(0xFF4285F4), style = MaterialTheme.typography.titleLarge)
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Gmail-Konto einrichten", style = MaterialTheme.typography.titleMedium)
+            Text("Auch für Google-Workspace-Adressen", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.AutoMirrored.Outlined.ArrowForward, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun GmailGuide(onOpen: () -> Unit, onCancel: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(26.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer).padding(18.dp)
+    ) {
+        Text("Gmail mit App-Passwort", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+        Spacer(Modifier.height(8.dp))
+        val steps = listOf(
+            "Die Bestätigung in zwei Schritten muss im Google-Konto eingeschaltet sein.",
+            "Auf „App-Passwort erstellen“ tippen, mit Google anmelden und als Namen z. B. „Amelia“ eingeben.",
+            "Das angezeigte 16-stellige Passwort kopieren und unten einfügen (Leerzeichen sind egal)."
+        )
+        steps.forEachIndexed { i, step ->
+            Row(Modifier.padding(vertical = 3.dp)) {
+                Text("${i + 1}.", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.width(22.dp))
+                Text(step, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Pill("App-Passwort erstellen", true, onClick = onOpen)
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onCancel) { Text("Anderer Anbieter") }
+        }
+        Text(
+            "Dein normales Google-Passwort funktioniert hier nicht. Das App-Passwort gilt nur für den Mailabruf und lässt sich jederzeit widerrufen.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+            modifier = Modifier.padding(top = 6.dp)
+        )
+    }
+}
+
+@Composable
+private fun CertificateDialog(cert: CertificateInfo, onTrust: () -> Unit, onDismiss: () -> Unit) {
+    val date = java.text.SimpleDateFormat("d. MMMM yyyy", java.util.Locale.GERMANY)
+    fun cn(dn: String) = Regex("CN=([^,]+)").find(dn)?.groupValues?.get(1) ?: dn
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.tertiary) },
+        title = { Text("Unbekanntes Zertifikat") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    when {
+                        cert.hostnameMismatch -> "Das Zertifikat von ${cert.host} ist auf einen anderen Namen ausgestellt."
+                        cert.selfSigned -> "${cert.host} nutzt ein selbst ausgestelltes Zertifikat – typisch für eigene Server."
+                        else -> "Das Zertifikat von ${cert.host} stammt von keiner Stelle, der Android vertraut."
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(12.dp))
+                CertLine("Ausgestellt für", cn(cert.subject))
+                CertLine("Aussteller", cn(cert.issuer))
+                CertLine("Gültig bis", date.format(cert.validUntil))
+                CertLine("Server", "${cert.host}:${cert.port}")
+                Spacer(Modifier.height(8.dp))
+                Text("SHA-256-Fingerabdruck", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    cert.fingerprint.chunked(24).joinToString("\n"),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Nur bestätigen, wenn es dein eigener Server ist und der Fingerabdruck mit dem auf dem Server übereinstimmt. " +
+                        "Amelia merkt sich genau dieses Zertifikat und warnt, falls sich es später ändert.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onTrust) { Text("Vertrauen und verbinden") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } }
+    )
+}
+
+@Composable
+private fun CertLine(label: String, value: String) {
+    Row(Modifier.padding(vertical = 2.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(110.dp))
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+/** Zusätzliche Absenderadressen (Aliasse) eines Kontos. */
+@Composable
+private fun IdentityEditor(encoded: String, onChange: (String) -> Unit) {
+    val list = encoded.lines().mapNotNull { line ->
+        val parts = line.split('|')
+        val email = parts.getOrNull(1)?.trim().orEmpty()
+        if (email.isEmpty()) null else Identity(parts[0].trim(), email)
+    }
+    var newName by rememberSaveable { mutableStateOf("") }
+    var newEmail by rememberSaveable { mutableStateOf("") }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Text(
+            "Zum Beispiel Aliasse wie info@deine-domain.de. Beim Schreiben wählbar; Antworten gehen automatisch von der Adresse raus, an die die Mail ging.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        list.forEach { identity ->
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(identity.email, style = MaterialTheme.typography.titleSmall)
+                    if (identity.name.isNotBlank()) Text(identity.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TextButton(onClick = { onChange(encodeIdentities(list - identity)) }) { Text("Entfernen", color = Brand.Coral) }
+            }
+        }
+        Input("Name (optional)", newName, { newName = it })
+        Input("Weitere Adresse", newEmail, { newEmail = it.trim() }, KeyboardType.Email)
+        TextButton(
+            onClick = {
+                if (MimeUtil.isValidEmail(newEmail)) {
+                    onChange(encodeIdentities(list + Identity(newName.trim(), newEmail.trim())))
+                    newName = ""
+                    newEmail = ""
+                }
+            },
+            enabled = MimeUtil.isValidEmail(newEmail)
+        ) { Text("Adresse hinzufügen") }
     }
 }

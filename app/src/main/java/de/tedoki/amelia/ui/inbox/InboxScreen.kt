@@ -107,6 +107,9 @@ import de.tedoki.amelia.ui.components.MorphFab
 import de.tedoki.amelia.ui.components.MorphLoader
 import de.tedoki.amelia.ui.components.Pill
 import de.tedoki.amelia.ui.components.SheetRow
+import de.tedoki.amelia.ui.components.SnoozeSheet
+import de.tedoki.amelia.ui.components.swipeVisual
+import de.tedoki.amelia.data.SwipeAction
 import de.tedoki.amelia.ui.theme.Brand
 import de.tedoki.amelia.ui.theme.glass
 import java.util.Calendar
@@ -148,6 +151,9 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
     var selection by remember { mutableStateOf(setOf<Long>()) }
     var searchOpen by remember { mutableStateOf(false) }
     var moveFor by remember { mutableStateOf<List<Message>?>(null) }
+    var snoozeFor by remember { mutableStateOf<Message?>(null) }
+    val leftAction by vm.settings.swipeLeft.collectAsState()
+    val rightAction by vm.settings.swipeRight.collectAsState()
     var confirmEmptyTrash by remember { mutableStateOf<Account?>(null) }
 
     val accs = accounts ?: emptyList()
@@ -328,8 +334,18 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
                                             }
                                         },
                                         onLongClick = { selection = selection + m.id },
-                                        onDelete = { vm.delete(listOf(m)) },
-                                        onToggleRead = { vm.setSeen(listOf(m.id), !m.seen) },
+                                        leftAction = leftAction,
+                                        rightAction = rightAction,
+                                        removes = { action -> vm.removes(action) && vm.swipeProblem(action, m) == null },
+                                        onAction = { action ->
+                                            val problem = vm.swipeProblem(action, m)
+                                            when {
+                                                problem != null -> vm.toast(problem)
+                                                action == SwipeAction.SNOOZE -> snoozeFor = m
+                                                action == SwipeAction.MOVE -> moveFor = listOf(m)
+                                                else -> vm.applySwipe(action, m)
+                                            }
+                                        },
                                         onUnsnooze = if (mailbox == Mailbox.Snoozed) ({ vm.unsnooze(m) }) else null
                                     )
                                 }
@@ -378,6 +394,16 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
                     selection = emptySet()
                 }
             }
+        }
+    }
+
+    snoozeFor?.let { m ->
+        SnoozeSheet(
+            onDismiss = { snoozeFor = null },
+            onUnsnooze = if (m.snoozedUntil > System.currentTimeMillis()) ({ vm.unsnooze(m); snoozeFor = null }) else null
+        ) { until ->
+            vm.snooze(m, until)
+            snoozeFor = null
         }
     }
 
@@ -448,43 +474,57 @@ private fun SwipeRow(
     selectionMode: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onDelete: () -> Unit,
-    onToggleRead: () -> Unit,
+    leftAction: SwipeAction,
+    rightAction: SwipeAction,
+    removes: (SwipeAction) -> Boolean,
+    onAction: (SwipeAction) -> Unit,
     onUnsnooze: (() -> Unit)?
 ) {
     val state = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.EndToStart -> { onDelete(); true }
-                SwipeToDismissBoxValue.StartToEnd -> { onToggleRead(); false }
-                else -> false
+            val action = when (value) {
+                SwipeToDismissBoxValue.EndToStart -> leftAction
+                SwipeToDismissBoxValue.StartToEnd -> rightAction
+                else -> SwipeAction.NONE
+            }
+            if (action == SwipeAction.NONE) {
+                false
+            } else {
+                val remove = removes(action)
+                onAction(action)
+                remove
             }
         }
     )
     SwipeToDismissBox(
         state = state,
-        enableDismissFromStartToEnd = !selectionMode,
-        enableDismissFromEndToStart = !selectionMode,
+        enableDismissFromStartToEnd = !selectionMode && rightAction != SwipeAction.NONE,
+        enableDismissFromEndToStart = !selectionMode && leftAction != SwipeAction.NONE,
         backgroundContent = {
             val dir = state.dismissDirection
-            val color by animateColorAsState(
-                when (dir) {
-                    SwipeToDismissBoxValue.EndToStart -> Brand.Coral
-                    SwipeToDismissBoxValue.StartToEnd -> MaterialTheme.colorScheme.primary
-                    else -> Color.Transparent
-                }, label = "bg"
-            )
+            val visual = when (dir) {
+                SwipeToDismissBoxValue.EndToStart -> swipeVisual(leftAction, message.seen, message.flagged)
+                SwipeToDismissBoxValue.StartToEnd -> swipeVisual(rightAction, message.seen, message.flagged)
+                else -> null
+            }
+            val color by animateColorAsState(visual?.color ?: Color.Transparent, label = "bg")
             Box(
                 Modifier.fillMaxSize().padding(vertical = 3.dp).clip(RoundedCornerShape(24.dp)).background(color)
                     .padding(horizontal = 24.dp),
                 contentAlignment = if (dir == SwipeToDismissBoxValue.EndToStart) Alignment.CenterEnd else Alignment.CenterStart
             ) {
-                if (dir != SwipeToDismissBoxValue.Settled) {
-                    Icon(
-                        if (dir == SwipeToDismissBoxValue.EndToStart) Icons.Outlined.DeleteOutline
-                        else if (message.seen) Icons.Outlined.MarkEmailUnread else Icons.Outlined.MarkEmailRead,
-                        null, tint = Color.White
-                    )
+                if (visual != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (dir == SwipeToDismissBoxValue.EndToStart) {
+                            Text(visual.label, color = Color.White, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Icon(visual.icon, null, tint = Color.White)
+                        if (dir == SwipeToDismissBoxValue.StartToEnd) {
+                            Spacer(Modifier.width(8.dp))
+                            Text(visual.label, color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
         }

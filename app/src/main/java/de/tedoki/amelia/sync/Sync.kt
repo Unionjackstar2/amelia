@@ -106,8 +106,15 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 class SnoozeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val id = inputData.getLong("id", -1)
-        val m = MailRepository.get(applicationContext).message(id) ?: return Result.success()
-        if (m.snoozedUntil in 1..System.currentTimeMillis() + 60_000) Notifier.snoozeReturned(applicationContext, m)
+        val repo = MailRepository.get(applicationContext)
+        val m = repo.message(id) ?: return Result.success()
+        if (m.snoozedUntil in 1..System.currentTimeMillis() + 60_000) {
+            if (AppSettings.get(applicationContext).snoozeUnread.value && m.seen) {
+                repo.setSeen(listOf(m.id), false)
+                repo.pushAllFlags()
+            }
+            Notifier.snoozeReturned(applicationContext, m)
+        }
         return Result.success()
     }
 }

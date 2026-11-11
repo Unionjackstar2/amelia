@@ -15,7 +15,9 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import de.tedoki.amelia.MainActivity
 import de.tedoki.amelia.R
+import de.tedoki.amelia.data.AppSettings
 import de.tedoki.amelia.data.MailRepository
+import de.tedoki.amelia.data.NotificationContent
 import de.tedoki.amelia.data.db.Account
 import de.tedoki.amelia.data.db.Message
 import de.tedoki.amelia.data.db.Pending
@@ -78,26 +80,46 @@ object Notifier {
     }
 
     fun newMail(context: Context, account: Account, list: List<Message>) {
-        if (!allowed(context) || list.isEmpty()) return
+        if (!allowed(context) || list.isEmpty() || !account.notify) return
+        val settings = AppSettings.get(context)
+        val content = settings.notificationContent.value
+        val silent = settings.inQuietHours()
         val nm = NotificationManagerCompat.from(context)
         val group = "account_${account.id}"
         for (m in list.sortedBy { it.date }.takeLast(8)) {
-            val n = NotificationCompat.Builder(context, CHANNEL_MAIL)
+            val subject = m.subject.ifBlank { "(Kein Betreff)" }
+            val (title, text) = when (content) {
+                NotificationContent.FULL -> m.senderDisplay to subject
+                NotificationContent.SENDER -> m.senderDisplay to "Neue E-Mail"
+                NotificationContent.MINIMAL -> "Neue E-Mail" to account.label
+            }
+            // Version für den Sperrbildschirm: immer ohne Inhalt
+            val public = NotificationCompat.Builder(context, CHANNEL_MAIL)
                 .setSmallIcon(R.drawable.ic_stat_mail)
                 .setColor(account.color)
-                .setContentTitle(m.senderDisplay)
-                .setContentText(m.subject.ifBlank { "(Kein Betreff)" })
-                .setStyle(NotificationCompat.BigTextStyle().bigText("${m.subject}\n${m.snippet}"))
+                .setContentTitle("Neue E-Mail")
+                .setContentText(account.label)
+                .build()
+            val builder = NotificationCompat.Builder(context, CHANNEL_MAIL)
+                .setSmallIcon(R.drawable.ic_stat_mail)
+                .setColor(account.color)
+                .setContentTitle(title)
+                .setContentText(text)
                 .setSubText(account.label)
                 .setWhen(m.date)
                 .setGroup(group)
                 .setAutoCancel(true)
+                .setSilent(silent)
                 .setCategory(NotificationCompat.CATEGORY_EMAIL)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(public)
                 .setContentIntent(openIntent(context, m.id))
                 .addAction(0, "Gelesen", action(context, NotificationActionReceiver.ACTION_READ, m.id))
                 .addAction(0, "Löschen", action(context, NotificationActionReceiver.ACTION_DELETE, m.id))
-                .build()
-            try { nm.notify(m.id.toInt(), n) } catch (_: SecurityException) {}
+            if (content == NotificationContent.FULL) {
+                builder.setStyle(NotificationCompat.BigTextStyle().bigText("$subject\n${m.snippet}"))
+            }
+            try { nm.notify(m.id.toInt(), builder.build()) } catch (_: SecurityException) {}
         }
         val summary = NotificationCompat.Builder(context, CHANNEL_MAIL)
             .setSmallIcon(R.drawable.ic_stat_mail)
@@ -106,6 +128,7 @@ object Notifier {
             .setContentText("Neue Nachrichten")
             .setGroup(group)
             .setGroupSummary(true)
+            .setSilent(silent)
             .setAutoCancel(true)
             .build()
         try { nm.notify(group.hashCode(), summary) } catch (_: SecurityException) {}

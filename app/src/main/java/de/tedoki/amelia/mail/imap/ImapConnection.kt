@@ -44,7 +44,7 @@ class ImapCommandException(message: String) : MailException(message)
  */
 class ImapConnection(private val config: ServerConfig) : Closeable {
 
-    private val socket = MailSocket(config.host, config.port, config.security)
+    private val socket = MailSocket(config.host, config.port, config.security, config.pinned)
     private var tagCounter = 0
     var capabilities: Set<String> = emptySet()
         private set
@@ -294,7 +294,7 @@ class ImapConnection(private val config: ServerConfig) : Closeable {
 
     fun fetchHeaders(uids: Collection<Long>): List<HeaderFetch> {
         if (uids.isEmpty()) return emptyList()
-        val fields = "DATE FROM TO CC REPLY-TO SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES CONTENT-TYPE LIST-UNSUBSCRIBE"
+        val fields = "DATE FROM TO CC REPLY-TO SUBJECT MESSAGE-ID IN-REPLY-TO REFERENCES CONTENT-TYPE LIST-UNSUBSCRIBE AUTHENTICATION-RESULTS"
         val result = mutableListOf<HeaderFetch>()
         command("UID FETCH ${uidSet(uids)} (UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS ($fields)])") { r ->
             val data = r.fetchData()?.second ?: return@command

@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import de.tedoki.amelia.data.Draft
 import de.tedoki.amelia.data.DraftAttachment
 import de.tedoki.amelia.data.db.Contact
+import de.tedoki.amelia.data.db.identityList
 import de.tedoki.amelia.mail.mime.Address
 import de.tedoki.amelia.mail.mime.MimeUtil
 import de.tedoki.amelia.ui.AmeliaViewModel
@@ -86,6 +87,7 @@ fun ComposeScreen(vm: AmeliaViewModel, args: ComposeArgs) {
 
     var loaded by rememberSaveable { mutableStateOf(false) }
     var accountId by rememberSaveable { mutableStateOf(0L) }
+    var fromEmail by rememberSaveable { mutableStateOf("") }
     var to by rememberSaveable { mutableStateOf("") }
     var cc by rememberSaveable { mutableStateOf("") }
     var bcc by rememberSaveable { mutableStateOf("") }
@@ -104,6 +106,7 @@ fun ComposeScreen(vm: AmeliaViewModel, args: ComposeArgs) {
         if (!loaded) {
             val init = vm.prepareCompose(args)
             accountId = init.accountId
+            fromEmail = init.fromEmail
             to = init.to
             cc = init.cc
             showCc = init.cc.isNotBlank()
@@ -146,7 +149,14 @@ fun ComposeScreen(vm: AmeliaViewModel, args: ComposeArgs) {
             invalid.isNotEmpty() -> { error = "Ungültige Adresse: ${invalid.joinToString { it.email.ifBlank { it.name } }}"; return }
         }
         sending = true
-        vm.send(Draft(accountId, toList, ccList, bccList, subject.trim(), body, attachments.toList(), replyToId)) { result ->
+        val account = accounts.orEmpty().firstOrNull { it.id == accountId }
+        val identity = account?.identityList()?.firstOrNull { it.email.equals(fromEmail, true) }
+        val draft = Draft(
+            accountId, toList, ccList, bccList, subject.trim(), body, attachments.toList(), replyToId,
+            fromName = identity?.name?.ifBlank { null },
+            fromEmail = identity?.email
+        )
+        vm.send(draft) { result ->
             sending = false
             if (result == null) vm.pop() else error = result
         }
@@ -182,12 +192,18 @@ fun ComposeScreen(vm: AmeliaViewModel, args: ComposeArgs) {
 
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp)) {
             Column(Modifier.fillMaxWidth().glass(RoundedCornerShape(28.dp)).padding(horizontal = 18.dp, vertical = 6.dp)) {
-                val accs = accounts.orEmpty()
-                if (accs.size > 1) {
+                val senders = accounts.orEmpty().flatMap { a -> a.identityList().map { a to it } }
+                if (senders.size > 1) {
                     Row(Modifier.horizontalScroll(rememberScrollState()).padding(vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("Von", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.align(Alignment.CenterVertically).width(52.dp))
-                        accs.forEach { a -> Pill(a.email, a.id == accountId) { accountId = a.id } }
+                        senders.forEach { (a, identity) ->
+                            val selected = a.id == accountId && (identity.email.equals(fromEmail, true) || fromEmail.isBlank() && identity.email == a.email)
+                            Pill(identity.email, selected) {
+                                accountId = a.id
+                                fromEmail = identity.email
+                            }
+                        }
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }

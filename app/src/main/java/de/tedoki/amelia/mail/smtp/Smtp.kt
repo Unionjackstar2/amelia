@@ -16,7 +16,7 @@ import java.util.UUID
 
 class SmtpConnection(private val config: ServerConfig) : Closeable {
 
-    private val socket = MailSocket(config.host, config.port, config.security, readTimeoutMs = 120_000)
+    private val socket = MailSocket(config.host, config.port, config.security, config.pinned, readTimeoutMs = 120_000)
     private var extensions: List<String> = emptyList()
 
     private data class Reply(val code: Int, val lines: List<String>) {
@@ -187,7 +187,6 @@ object MessageBuilder {
         msg.inReplyTo?.takeIf { it.isNotBlank() }?.let { header(sb, "In-Reply-To", it) }
         msg.references?.takeIf { it.isNotBlank() }?.let { header(sb, "References", it) }
         header(sb, "MIME-Version", "1.0")
-        header(sb, "User-Agent", "Amelia (Tedoki Labs)")
 
         val textPart = "Content-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
             encodeQuotedPrintable(msg.text) + "\r\n"
