@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -144,6 +145,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
     val linkCheck by vm.settings.linkCheck.collectAsState()
     var pendingLink by remember { mutableStateOf<LinkRequest?>(null) }
     var headerCollapsed by remember(messageId) { mutableStateOf(false) }
+    var showAttachments by remember(messageId) { mutableStateOf(false) }
     var barVisible by remember(messageId) { mutableStateOf(true) }
     // Scrollen nach unten: Leiste weg, Kopf einklappen; nach oben: Leiste zurück; ganz oben: alles zeigen
     val onContentScroll: (Int, Int) -> Unit = { y, dy ->
@@ -242,8 +244,8 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                         modifier = Modifier.weight(1f)
                     )
                     if (atts.isNotEmpty()) {
-                        Icon(Icons.Outlined.Attachment, "Anhänge", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
+                        AttachmentsButton(atts.size, compact = true) { showAttachments = true }
+                        Spacer(Modifier.width(6.dp))
                     }
                     Icon(Icons.Outlined.ExpandMore, "Kopf ausklappen", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -296,26 +298,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 }
                 if (atts.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
-                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        atts.forEach { a ->
-                            Row(
-                                Modifier.widthIn(max = 220.dp).clip(RoundedCornerShape(14.dp))
-                                    .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f))
-                                    .clickable { attachmentFor = a }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(if (a.mimeType.startsWith("image/")) Icons.Outlined.Image else Icons.Outlined.Attachment, null,
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(16.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(a.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer)
-                                Spacer(Modifier.width(6.dp))
-                                Text(Fmt.size(a.size), style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
-                            }
-                        }
-                    }
+                    AttachmentsButton(atts.size) { showAttachments = true }
                 }
             }
         }
@@ -418,6 +401,22 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 vm.pop()
             }
         }
+        }
+    }
+
+    if (showAttachments) {
+        val atts = content?.attachments.orEmpty()
+        GlassSheet(if (atts.size == 1) "1 Anhang" else "${atts.size} Anhänge", onDismiss = { showAttachments = false }) {
+            atts.forEach { a ->
+                SheetRow(
+                    if (a.mimeType.startsWith("image/")) Icons.Outlined.Image else Icons.Outlined.Attachment,
+                    a.name,
+                    Fmt.size(a.size)
+                ) {
+                    showAttachments = false
+                    attachmentFor = a
+                }
+            }
         }
     }
 
@@ -527,11 +526,22 @@ private fun plainTextAnnotated(text: String, quoteColor: Color, linkColor: Color
 
 private const val INLINE_HOST = "amelia.inline"
 
+private fun inlineEncode(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
 private fun prepareHtml(html: String, bottomPadding: Int): String {
     var h = html
     h = h.replace(Regex("(?is)<script[^>]*>.*?</script>"), "")
     h = h.replace(Regex("(?i)<meta[^>]+(charset|http-equiv)[^>]*>"), "")
-    h = h.replace(Regex("(?i)cid:([^\"'\\s)>]+)")) { "https://$INLINE_HOST/" + URLEncoder.encode(it.groupValues[1], "UTF-8") }
+    // Eingebettete Bilder (cid:…) über einen internen Host ausliefern
+    h = h.replace(Regex("(?i)cid:([^\"'\\s)>]+)")) {
+        val raw = it.groupValues[1]
+        val cid = try { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") } catch (_: Exception) { raw }
+        "https://$INLINE_HOST/" + inlineEncode(cid)
+    }
+    // Bilder, die nur über ihren Dateinamen verknüpft sind (z. B. „image001.png“)
+    h = h.replace(Regex("(?i)(<img\\b[^>]*?\\bsrc\\s*=\\s*)([\"'])(?!https?:|cid:|data:|//|about:)([^\"']+)\\2")) {
+        it.groupValues[1] + it.groupValues[2] + "https://$INLINE_HOST/name/" + inlineEncode(it.groupValues[3].trim()) + it.groupValues[2]
+    }
     val head = """<meta name="viewport" content="width=device-width, initial-scale=1"><style>
         html,body{margin:0;padding:0;background:#fff}
         body{padding:16px 16px ${bottomPadding}px 16px;font-family:sans-serif;font-size:15px;line-height:1.5;color:#1b1f27;word-wrap:break-word;overflow-wrap:anywhere}
@@ -572,19 +582,25 @@ private fun MailWebView(
                 settings.builtInZoomControls = true
                 settings.displayZoomControls = false
                 settings.textZoom = 100
+                // Bilder über http in einer https-Seite erlauben (nur passiv, keine Skripte)
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 setOnScrollChangeListener { _, _, y, _, oldY -> scrollCallback(y, y - oldY) }
             }
         },
         update = { wv ->
             if (wv.tag != key) {
                 wv.tag = key
-                wv.settings.blockNetworkImage = !allowImages
                 wv.webViewClient = object : WebViewClient() {
                     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                         val url = request.url
                         if (url.host == INLINE_HOST) {
-                            val cid = URLDecoder.decode(url.path.orEmpty().removePrefix("/"), "UTF-8")
-                            val data = runBlocking { resolveCid(cid) } ?: return empty()
+                            val path = url.encodedPath.orEmpty().removePrefix("/")
+                            val key = if (path.startsWith("name/")) {
+                                "name/" + URLDecoder.decode(path.removePrefix("name/"), "UTF-8")
+                            } else {
+                                URLDecoder.decode(path, "UTF-8")
+                            }
+                            val data = try { runBlocking { resolveCid(key) } } catch (_: Exception) { null } ?: return empty()
                             return WebResourceResponse(data.first, null, ByteArrayInputStream(data.second))
                         }
                         if (!allowImages && (url.scheme == "http" || url.scheme == "https")) return empty()
@@ -683,5 +699,25 @@ private fun ExpandableSubject(subject: String) {
                 modifier = Modifier.padding(start = 6.dp, top = 2.dp)
             )
         }
+    }
+}
+
+/** Kleiner Knopf statt großer Anhang-Kacheln im Kopfbereich. */
+@Composable
+private fun AttachmentsButton(count: Int, compact: Boolean = false, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .clickable(onClick = onClick)
+            .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = if (compact) 3.dp else 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Outlined.Attachment, null, tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(15.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(
+            if (compact) "$count" else if (count == 1) "1 Anhang anzeigen" else "$count Anhänge anzeigen",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
     }
 }

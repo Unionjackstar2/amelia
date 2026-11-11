@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Unverschlüsselte Verbindungen werden nur für Bilder in Mails gebraucht, die der Nutzer
+  ausdrücklich lädt (viele Newsletter und Signaturen verlinken Bilder per http).
+  Mail-Verbindungen laufen über eigene Sockets und sind davon nicht betroffen.
+  Vertraut wird ausschließlich den System-Zertifikaten.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

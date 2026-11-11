@@ -610,10 +610,24 @@ class MailRepository private constructor(private val context: Context) {
             p.section, p.displayName, p.mimeType,
             if (p.encoding == "base64") p.size * 3 / 4 else p.size, p.normalizedContentId
         )
+        fun referenced(p: MimePart): Boolean {
+            val cid = p.normalizedContentId
+            return html != null && cid != null && html.contains("cid:$cid", ignoreCase = true)
+        }
+        // Im HTML eingebettete Bilder (z. B. Signaturen) vorab in einem Rutsch laden
+        if (html != null && root != null && a.protocol == Protocol.IMAP) {
+            try {
+                prefetchParts(m, a, flatten(root).filter { referenced(it) || it.normalizedContentId != null && it.mimeType.startsWith("image/") })
+            } catch (e: Exception) {
+                Log.w(TAG, "Inline-Bilder: ${e.message}")
+            }
+        }
         val inline = layout?.inline?.map { info(it) } ?: emptyList()
-        // Inline-Bilder, die im HTML nicht vorkommen, als normale Anhänge zeigen
-        val unreferenced = inline.filter { i -> html == null || i.contentId == null || !html.contains(i.contentId, ignoreCase = true) }
-        MessageContent(html, text ?: if (html == null) "" else null, (layout?.attachments?.map { info(it) } ?: emptyList()) + unreferenced, inline)
+        // Inline-Bilder, die im HTML nicht vorkommen, als normale Anhänge zeigen;
+        // umgekehrt keine „Anhänge“ zeigen, die in Wahrheit im Text eingebettet sind
+        val unreferenced = layout?.inline?.filter { !referenced(it) }?.map { info(it) } ?: emptyList()
+        val realAttachments = layout?.attachments?.filter { !referenced(it) }?.map { info(it) } ?: emptyList()
+        MessageContent(html, text ?: if (html == null) "" else null, realAttachments + unreferenced, inline)
     }
 
     private fun structureOf(m: Message): MimePart? = when {
@@ -622,13 +636,38 @@ class MailRepository private constructor(private val context: Context) {
         else -> null
     }
 
+    private fun partFile(m: Message, part: MimePart): File {
+        val dir = bodies.attachmentDir(m.id, part.section)
+        val safe = part.displayName.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").take(120).ifBlank { "anhang" }
+        return File(dir, safe)
+    }
+
+    private fun flatten(p: MimePart): List<MimePart> = if (p.children.isEmpty()) listOf(p) else p.children.flatMap { flatten(it) }
+
+    /** Lädt mehrere Teile über eine einzige Verbindung in den Zwischenspeicher. */
+    private suspend fun prefetchParts(m: Message, a: Account, parts: List<MimePart>) {
+        if (bodies.rawFile(m.id).exists()) return
+        val missing = parts.filter { it.size < 8_000_000 && !partFile(m, it).let { f -> f.exists() && f.length() > 0 } }
+            .distinctBy { it.section }
+        if (missing.isEmpty()) return
+        val f = folders.get(m.folderId) ?: return
+        lock(a.id).withLock {
+            imap(a) { c ->
+                c.select(f.path)
+                for ((section, group) in missing.groupBy { it.fetchSection }) {
+                    val p = group.first()
+                    val bytes = c.fetchSection(m.uid, section) ?: continue
+                    partFile(m, p).writeBytes(MimeUtil.decodeTransfer(bytes, p.encoding))
+                }
+            }
+        }
+    }
+
     /** Lädt einen Anhang (oder ein Inline-Bild) und liefert die lokale Datei. */
     suspend fun attachmentFile(messageId: Long, section: String): File = withContext(Dispatchers.IO) {
         val m = messages.get(messageId) ?: throw MailException("Nachricht nicht gefunden.")
         val part = structureOf(m)?.find(section) ?: throw MailException("Anhang nicht gefunden.")
-        val dir = bodies.attachmentDir(m.id, section)
-        val safe = part.displayName.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_").take(120).ifBlank { "anhang" }
-        val file = File(dir, safe)
+        val file = partFile(m, part)
         if (file.exists() && file.length() > 0) return@withContext file
         val raw = bodies.rawFile(m.id)
         val data = if (raw.exists()) {
@@ -648,20 +687,43 @@ class MailRepository private constructor(private val context: Context) {
         file
     }
 
-    suspend fun inlineImage(messageId: Long, cid: String): Pair<String, ByteArray>? = withContext(Dispatchers.IO) {
+    /**
+     * Eingebettetes Bild für die HTML-Ansicht. [key] ist eine Content-ID oder "name/<dateiname>"
+     * für Bilder, die nur über ihren Dateinamen verknüpft sind.
+     */
+    suspend fun inlineImage(messageId: Long, key: String): Pair<String, ByteArray>? = withContext(Dispatchers.IO) {
         val m = messages.get(messageId) ?: return@withContext null
         val root = structureOf(m) ?: return@withContext null
-        val wanted = cid.trim().removePrefix("<").removeSuffix(">")
-        fun search(p: MimePart): MimePart? {
-            if (p.normalizedContentId.equals(wanted, true)) return p
-            for (ch in p.children) search(ch)?.let { return it }
-            return null
-        }
-        val part = search(root) ?: return@withContext null
+        val parts = flatten(root)
+        val part = (if (key.startsWith("name/")) {
+            val name = key.removePrefix("name/").substringAfterLast('/').substringBefore('?')
+            parts.firstOrNull { it.fileName.equals(name, true) }
+                ?: parts.firstOrNull { it.normalizedContentId?.substringBefore('@').equals(name, true) }
+        } else {
+            val wanted = key.trim().removePrefix("<").removeSuffix(">")
+            parts.firstOrNull { it.normalizedContentId.equals(wanted, true) }
+                ?: parts.firstOrNull { it.normalizedContentId?.substringBefore('@').equals(wanted.substringBefore('@'), true) }
+        }) ?: return@withContext null
         try {
-            part.mimeType to attachmentFile(messageId, part.section).readBytes()
-        } catch (_: Exception) {
+            val bytes = attachmentFile(messageId, part.section).readBytes()
+            sniffImageType(bytes, part.mimeType) to bytes
+        } catch (e: Exception) {
+            Log.w(TAG, "Inline-Bild ${part.section}: ${e.message}")
             null
+        }
+    }
+
+    /** Manche Programme kennzeichnen Bilder als application/octet-stream – am Dateiinhalt erkennen. */
+    private fun sniffImageType(b: ByteArray, declared: String): String {
+        if (declared.startsWith("image/")) return declared
+        fun at(i: Int) = if (i < b.size) b[i].toInt() and 0xFF else -1
+        return when {
+            at(0) == 0x89 && at(1) == 0x50 -> "image/png"
+            at(0) == 0xFF && at(1) == 0xD8 -> "image/jpeg"
+            at(0) == 0x47 && at(1) == 0x49 -> "image/gif"
+            at(0) == 0x52 && at(1) == 0x49 && at(8) == 0x57 -> "image/webp"
+            at(0) == 0x3C -> "image/svg+xml"
+            else -> declared
         }
     }
 
