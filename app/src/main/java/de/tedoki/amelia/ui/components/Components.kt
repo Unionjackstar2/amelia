@@ -50,6 +50,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -231,7 +232,7 @@ fun Pill(
             text,
             style = MaterialTheme.typography.labelLarge,
             color = when {
-                accent != null && selected -> Color(0xFF2B1A00)
+                accent != null && selected -> if (accent.luminance() < 0.4f) Color.White else Color(0xFF2B1A00)
                 accent != null -> scheme.onSurface
                 selected -> scheme.onPrimary
                 else -> scheme.onSurface

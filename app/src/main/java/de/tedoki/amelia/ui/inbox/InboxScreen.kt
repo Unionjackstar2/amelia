@@ -242,6 +242,22 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
                                 Spacer(Modifier.width(8.dp))
                                 GlassIconButton(Icons.Outlined.ViewCarousel, "Kartenansicht", onClick = onBackToDesk)
                             }
+                            if (currentFolder?.role == FolderRole.TRASH && !searchOpen && shown.isNotEmpty()) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "${shown.size} Nachricht${if (shown.size == 1) "" else "en"} im Papierkorb",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Pill("Papierkorb leeren", true, accent = Brand.Coral) {
+                                        confirmEmptyTrash = accs.firstOrNull { it.id == currentFolder.accountId }
+                                    }
+                                }
+                            }
                             if (searchOpen) {
                                 Row(
                                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(50.dp)

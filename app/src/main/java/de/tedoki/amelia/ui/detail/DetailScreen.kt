@@ -16,6 +16,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -135,6 +143,16 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
     val trusted by vm.settings.trustedSenders.collectAsState()
     val linkCheck by vm.settings.linkCheck.collectAsState()
     var pendingLink by remember { mutableStateOf<LinkRequest?>(null) }
+    var headerCollapsed by remember(messageId) { mutableStateOf(false) }
+    var barVisible by remember(messageId) { mutableStateOf(true) }
+    // Scrollen nach unten: Leiste weg, Kopf einklappen; nach oben: Leiste zurück; ganz oben: alles zeigen
+    val onContentScroll: (Int, Int) -> Unit = { y, dy ->
+        when {
+            y <= 0 -> { barVisible = true; headerCollapsed = false }
+            dy > 6 -> { barVisible = false; if (y > 48) headerCollapsed = true }
+            dy < -6 -> barVisible = true
+        }
+    }
     var content by remember(messageId) { mutableStateOf<MessageContent?>(null) }
     var error by remember(messageId) { mutableStateOf<String?>(null) }
     var reloadKey by remember { mutableStateOf(0) }
@@ -177,8 +195,8 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         // Werkzeugleiste
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            GlassIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Zurück") { vm.pop() }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            GlassIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Zurück", size = 44.dp) { vm.pop() }
             Spacer(Modifier.weight(1f))
             GlassIconButton(
                 if (m.flagged) Icons.Rounded.Star else Icons.Outlined.StarOutline,
@@ -203,66 +221,98 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
             }
         }
 
-        // Kopf
+        // Kopf: kompakt; beim Scrollen eingeklappt (nur die erste Betreffzeile), per Tipp umschaltbar
+        val atts = content?.attachments.orEmpty()
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp).glass(RoundedCornerShape(30.dp)).animateContentSize().padding(18.dp)
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp).glass(RoundedCornerShape(24.dp))
+                .clickable { headerCollapsed = !headerCollapsed }
+                .animateContentSize()
+                .padding(horizontal = 14.dp, vertical = if (headerCollapsed) 10.dp else 12.dp)
         ) {
-            ExpandableSubject(m.subject.ifBlank { "(Kein Betreff)" })
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { showDetails = !showDetails }) {
-                Avatar(m.senderDisplay, m.fromEmail.ifBlank { m.senderDisplay }, size = 42.dp)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(m.senderDisplay, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    // Die echte Adresse ist immer sichtbar
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (m.authResult == "pass") {
-                            Icon(Icons.Outlined.VerifiedUser, "Absender vom Mailanbieter bestätigt",
-                                tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(4.dp))
-                        }
-                        Text(
-                            m.fromEmail,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (senderWarnings.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontWeight = if (senderWarnings.isNotEmpty()) FontWeight.Bold else null,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                        )
+            if (headerCollapsed) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (senderWarnings.isNotEmpty()) {
+                        Icon(Icons.Outlined.WarningAmber, "Absender prüfen", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
                     }
                     Text(
-                        Fmt.short(m.date) + if (Fmt.short(m.date).contains(':')) "" else ", " + Fmt.timeOnly(m.date),
-                        style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        m.subject.ifBlank { "(Kein Betreff)" },
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+                    if (atts.isNotEmpty()) {
+                        Icon(Icons.Outlined.Attachment, "Anhänge", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Icon(Icons.Outlined.ExpandMore, "Kopf ausklappen", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                account?.let { AccountDot(it.color, size = 10.dp) }
-            }
-            SenderWarningCard(senderWarnings)
-            if (showDetails) {
-                Spacer(Modifier.height(10.dp))
-                DetailLine("Datum", Fmt.long(m.date))
-                if (m.toList.isNotBlank()) DetailLine("An", MimeUtil.parseAddressList(m.toList).joinToString(", ") { it.toString() })
-                if (m.ccList.isNotBlank()) DetailLine("Kopie", MimeUtil.parseAddressList(m.ccList).joinToString(", ") { it.toString() })
-                account?.let { DetailLine("Konto", "${it.label} (${it.email})") }
-            }
-            val atts = content?.attachments.orEmpty()
-            if (atts.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    atts.forEach { a ->
-                        Row(
-                            Modifier.widthIn(max = 220.dp).clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f))
-                                .clickable { attachmentFor = a }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(if (a.mimeType.startsWith("image/")) Icons.Outlined.Image else Icons.Outlined.Attachment, null,
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Column {
+            } else {
+                Row(verticalAlignment = Alignment.Top) {
+                    Box(Modifier.weight(1f)) { ExpandableSubject(m.subject.ifBlank { "(Kein Betreff)" }) }
+                    Icon(Icons.Outlined.ExpandLess, "Kopf einklappen", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { showDetails = !showDetails }) {
+                    Avatar(m.senderDisplay, m.fromEmail.ifBlank { m.senderDisplay }, size = 34.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(m.senderDisplay, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        // Die echte Adresse ist immer sichtbar
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (m.authResult == "pass") {
+                                Icon(Icons.Outlined.VerifiedUser, "Absender vom Mailanbieter bestätigt",
+                                    tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(13.dp))
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(
+                                m.fromEmail,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (senderWarnings.isNotEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontWeight = if (senderWarnings.isNotEmpty()) FontWeight.Bold else null,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            Fmt.short(m.date).let { if (it.contains(':')) it else "$it, ${Fmt.timeOnly(m.date)}" },
+                            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        account?.let {
+                            Spacer(Modifier.height(4.dp))
+                            AccountDot(it.color, size = 8.dp)
+                        }
+                    }
+                }
+                SenderWarningCard(senderWarnings)
+                if (showDetails) {
+                    Spacer(Modifier.height(8.dp))
+                    DetailLine("Datum", Fmt.long(m.date))
+                    if (m.toList.isNotBlank()) DetailLine("An", MimeUtil.parseAddressList(m.toList).joinToString(", ") { it.toString() })
+                    if (m.ccList.isNotBlank()) DetailLine("Kopie", MimeUtil.parseAddressList(m.ccList).joinToString(", ") { it.toString() })
+                    account?.let { DetailLine("Konto", "${it.label} (${it.email})") }
+                }
+                if (atts.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        atts.forEach { a ->
+                            Row(
+                                Modifier.widthIn(max = 220.dp).clip(RoundedCornerShape(14.dp))
+                                    .background(MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f))
+                                    .clickable { attachmentFor = a }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(if (a.mimeType.startsWith("image/")) Icons.Outlined.Image else Icons.Outlined.Attachment, null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
                                 Text(a.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     color = MaterialTheme.colorScheme.onSecondaryContainer)
-                                Text(Fmt.size(a.size), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
+                                Spacer(Modifier.width(6.dp))
+                                Text(Fmt.size(a.size), style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f))
                             }
                         }
                     }
@@ -270,7 +320,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
 
         // Inhalt
         Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 14.dp)) {
@@ -317,19 +367,28 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                                 bottomPadding = (barSpace.value + 16).toInt(),
                                 resolveCid = { cid -> vm.repo.inlineImage(m.id, cid) },
                                 onMailto = { to -> vm.push(Screen.Compose(ComposeArgs(ComposeMode.NEW, to = to))) },
-                                onLink = handleLink
+                                onLink = handleLink,
+                                onScroll = onContentScroll
                             )
                         }
                     }
                 }
                 else -> Box(Modifier.fillMaxSize().glass(RoundedCornerShape(26.dp))) {
+                    val textScroll = rememberScrollState()
+                    LaunchedEffect(textScroll) {
+                        var last = 0
+                        snapshotFlow { textScroll.value }.collect { v ->
+                            onContentScroll(v, v - last)
+                            last = v
+                        }
+                    }
                     SelectionContainer {
                         Text(
                             plainTextAnnotated(c.text.orEmpty(), MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.primary) { url ->
                                 handleLink(LinkRequest(url, null))
                             },
                             style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                            modifier = Modifier.fillMaxSize().verticalScroll(textScroll)
                                 .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 18.dp + barSpace)
                         )
                     }
@@ -339,9 +398,15 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
 
     }
 
-        // Schwebende Aktionsleiste – der Inhalt scrollt darunter durch
+        // Schwebende Aktionsleiste – verschwindet beim Scrollen nach unten
+        AnimatedVisibility(
+            visible = barVisible,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
         Row(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(14.dp)
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(14.dp)
                 .glass(RoundedCornerShape(32.dp), elevation = 12.dp, opacity = 1.35f).padding(6.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
@@ -352,6 +417,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                 vm.delete(listOf(m))
                 vm.pop()
             }
+        }
         }
     }
 
@@ -487,8 +553,10 @@ private fun MailWebView(
     bottomPadding: Int,
     resolveCid: suspend (String) -> Pair<String, ByteArray>?,
     onMailto: (String) -> Unit,
-    onLink: (LinkRequest) -> Unit
+    onLink: (LinkRequest) -> Unit,
+    onScroll: (Int, Int) -> Unit
 ) {
+    val scrollCallback by rememberUpdatedState(onScroll)
     val prepared = remember(html, bottomPadding) { LinkSafety.rewriteAnchors(prepareHtml(html, bottomPadding)) }
     val key = "${prepared.hashCode()}_$allowImages"
     AndroidView(
@@ -504,6 +572,7 @@ private fun MailWebView(
                 settings.builtInZoomControls = true
                 settings.displayZoomControls = false
                 settings.textZoom = 100
+                setOnScrollChangeListener { _, _, y, _, oldY -> scrollCallback(y, y - oldY) }
             }
         },
         update = { wv ->
