@@ -10,6 +10,7 @@ import de.tedoki.amelia.data.db.Folder
 import de.tedoki.amelia.data.db.Message
 import de.tedoki.amelia.data.db.Pending
 import de.tedoki.amelia.data.db.Protocol
+import de.tedoki.amelia.data.db.pinnedSet
 import de.tedoki.amelia.mail.imap.BodyStructure
 import de.tedoki.amelia.mail.imap.FolderRole
 import de.tedoki.amelia.mail.imap.HeaderFetch
