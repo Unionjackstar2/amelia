@@ -195,13 +195,25 @@ fun MorphFab(
 
 /** Auswahl-Pille (z. B. Zeitraum). */
 @Composable
-fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun Pill(
+    text: String,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    accent: Color? = null,
+    onClick: () -> Unit
+) {
     val scheme = MaterialTheme.colorScheme
     val shape = if (selected) RoundedCornerShape(14.dp) else RoundedCornerShape(50)
+    val background = when {
+        accent != null && selected -> Modifier.clip(shape).background(accent)
+        accent != null -> Modifier.clip(shape).background(accent.copy(alpha = 0.32f))
+        selected -> Modifier.clip(shape).background(scheme.primary)
+        else -> Modifier.glass(shape)
+    }
     Box(
         modifier
             .height(36.dp)
-            .then(if (selected) Modifier.clip(shape).background(scheme.primary) else Modifier.glass(shape))
+            .then(background)
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center
@@ -209,7 +221,12 @@ fun Pill(text: String, selected: Boolean, modifier: Modifier = Modifier, onClick
         Text(
             text,
             style = MaterialTheme.typography.labelLarge,
-            color = if (selected) scheme.onPrimary else scheme.onSurface
+            color = when {
+                accent != null && selected -> Color(0xFF2B1A00)
+                accent != null -> scheme.onSurface
+                selected -> scheme.onPrimary
+                else -> scheme.onSurface
+            }
         )
     }
 }

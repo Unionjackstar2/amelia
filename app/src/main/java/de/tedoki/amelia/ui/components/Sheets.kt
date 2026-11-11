@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Unarchive
 import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.outlined.Weekend
 import androidx.compose.material3.Icon
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import de.tedoki.amelia.ui.theme.Brand
 import de.tedoki.amelia.ui.theme.glass
 import java.util.Calendar
 
@@ -114,7 +116,7 @@ private fun at(daysAhead: Int, hour: Int): Long = Calendar.getInstance().apply {
 
 /** Parken: Nachricht verschwindet vom Schreibtisch und kommt zum gewählten Zeitpunkt zurück. */
 @Composable
-fun SnoozeSheet(onDismiss: () -> Unit, onPick: (Long) -> Unit) {
+fun SnoozeSheet(onDismiss: () -> Unit, onUnsnooze: (() -> Unit)? = null, onPick: (Long) -> Unit) {
     val now = System.currentTimeMillis()
     val cal = Calendar.getInstance()
     val hour = cal.get(Calendar.HOUR_OF_DAY)
@@ -126,7 +128,10 @@ fun SnoozeSheet(onDismiss: () -> Unit, onPick: (Long) -> Unit) {
     val toMonday = ((Calendar.MONDAY - dow) + 7) % 7
     val nextWeek = at(if (toMonday == 0) 7 else toMonday, 8)
 
-    GlassSheet("Parken bis …", onDismiss) {
+    GlassSheet(if (onUnsnooze != null) "Neu parken bis …" else "Parken bis …", onDismiss) {
+        if (onUnsnooze != null) {
+            SheetRow(Icons.Outlined.Unarchive, "Jetzt zurückholen", "Wieder auf den Schreibtisch legen", tint = Brand.Spark, onClick = onUnsnooze)
+        }
         SheetRow(Icons.Outlined.Schedule, "In 3 Stunden", Fmt.timeOnly(now + 3 * 3_600_000L)) { onPick(now + 3 * 3_600_000L) }
         SheetRow(Icons.Outlined.DarkMode, if (hour < 17) "Heute Abend" else "Später heute", Fmt.short(evening).let { if (it.contains(':')) it else "$it, ${Fmt.timeOnly(evening)}" }) { onPick(evening) }
         SheetRow(Icons.Outlined.WbSunny, "Morgen früh", "Morgen, 08:00") { onPick(tomorrow) }

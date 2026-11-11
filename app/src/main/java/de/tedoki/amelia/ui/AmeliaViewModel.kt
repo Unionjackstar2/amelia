@@ -129,9 +129,24 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
     val deskIndex: StateFlow<Int> = _deskIndex.asStateFlow()
     fun setDeskIndex(i: Int) { _deskIndex.value = i }
 
-    val deskMessages: StateFlow<List<Message>> = combine(settings.deskRange, settings.deskUnreadOnly, now) { r, u, n -> Triple(r, u, n) }
-        .flatMapLatest { (range, unreadOnly, n) -> dao.flowDesk(sinceFor(range), n, unreadOnly) }
-        .state(emptyList())
+    /** Schreibtisch zeigt statt der Eingänge die geparkten Mails. */
+    private val _deskSnoozed = MutableStateFlow(false)
+    val deskSnoozed: StateFlow<Boolean> = _deskSnoozed.asStateFlow()
+    fun setDeskSnoozed(v: Boolean) {
+        _deskSnoozed.value = v
+        _deskIndex.value = 0
+    }
+
+    val snoozedCount: StateFlow<Int> = now.flatMapLatest { dao.flowSnoozedCount(it) }.state(0)
+
+    val deskMessages: StateFlow<List<Message>> =
+        combine(settings.deskRange, settings.deskUnreadOnly, now, _deskSnoozed) { r, u, n, z -> DeskQuery(r, u, n, z) }
+            .flatMapLatest { q ->
+                if (q.snoozed) dao.flowSnoozed(q.now) else dao.flowDesk(sinceFor(q.range), q.now, q.unreadOnly)
+            }
+            .state(emptyList())
+
+    private data class DeskQuery(val range: DeskRange, val unreadOnly: Boolean, val now: Long, val snoozed: Boolean)
 
     private fun sinceFor(range: DeskRange): Long {
         if (range.days < 0) return 0
@@ -229,6 +244,10 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
         push(Screen.Detail(message.id))
         Notifier.cancel(getApplication<Application>(), message.id)
         if (!message.seen) setSeen(listOf(message.id), true)
+        // Zurückgekehrte Parkmail gilt mit dem Öffnen als erledigt
+        if (message.snoozedUntil in 1..System.currentTimeMillis()) {
+            viewModelScope.launch { repo.snooze(message.id, 0) }
+        }
     }
 
     fun openById(id: Long) {
@@ -448,7 +467,7 @@ class AmeliaViewModel(app: Application) : AndroidViewModel(app) {
     fun setDynamic(v: Boolean) = settings.setDynamic(v)
     fun setLoadImages(v: Boolean) = settings.setLoadImages(v)
     fun setStartInInbox(v: Boolean) = settings.setStartInInbox(v)
-    fun setRange(v: DeskRange) { settings.setRange(v); _deskIndex.value = 0 }
+    fun setRange(v: DeskRange) { settings.setRange(v); _deskSnoozed.value = false; _deskIndex.value = 0 }
     fun setUnreadOnly(v: Boolean) { settings.setUnreadOnly(v); _deskIndex.value = 0 }
     fun setSyncMode(v: SyncMode) {
         settings.setSync(v)

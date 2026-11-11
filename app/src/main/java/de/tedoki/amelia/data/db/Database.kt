@@ -204,12 +204,17 @@ interface MessageDao {
 
     // ------------------------------------------------------------- Listen
 
+    /**
+     * Schreibtisch: Posteingang im gewählten Zeitraum. Aus dem Parken zurückgekehrte Mails
+     * zählen ab ihrem Rückkehrzeitpunkt und erscheinen auch, wenn sie schon gelesen waren.
+     */
     @Query(
         """SELECT m.* FROM messages m JOIN folders f ON f.id = m.folderId
-           WHERE f.role = 'INBOX' AND m.pendingAction = 0 AND m.date >= :since
+           WHERE f.role = 'INBOX' AND m.pendingAction = 0
              AND (m.snoozedUntil = 0 OR m.snoozedUntil <= :now)
-             AND (:unreadOnly = 0 OR m.seen = 0)
-           ORDER BY m.date DESC LIMIT 400"""
+             AND (m.date >= :since OR (m.snoozedUntil > 0 AND m.snoozedUntil >= :since))
+             AND (:unreadOnly = 0 OR m.seen = 0 OR m.snoozedUntil > 0)
+           ORDER BY MAX(m.date, m.snoozedUntil) DESC LIMIT 400"""
     )
     fun flowDesk(since: Long, now: Long, unreadOnly: Boolean): Flow<List<Message>>
 
@@ -230,6 +235,9 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE snoozedUntil > :now AND pendingAction = 0 ORDER BY snoozedUntil")
     fun flowSnoozed(now: Long): Flow<List<Message>>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE snoozedUntil > :now AND pendingAction = 0")
+    fun flowSnoozedCount(now: Long): Flow<Int>
 
     @Query("SELECT * FROM messages WHERE flagged = 1 AND pendingAction = 0 ORDER BY date DESC LIMIT 300")
     fun flowFlagged(): Flow<List<Message>>

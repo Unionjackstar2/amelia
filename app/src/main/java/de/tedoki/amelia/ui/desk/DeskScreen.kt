@@ -103,7 +103,13 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
     val unreadOnly by vm.settings.deskUnreadOnly.collectAsState()
     val accounts by vm.accounts.collectAsState()
     val sync by vm.syncState.collectAsState()
+    val showSnoozed by vm.deskSnoozed.collectAsState()
+    val snoozedCount by vm.snoozedCount.collectAsState()
     var snoozeTarget by remember { mutableStateOf<Message?>(null) }
+
+    LaunchedEffect(snoozedCount, showSnoozed) {
+        if (showSnoozed && snoozedCount == 0) vm.setDeskSnoozed(false)
+    }
 
     val searching = query.trim().length >= 2
     val cards = if (searching) results else desk
@@ -126,8 +132,13 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    DeskRange.values().forEach { r -> Pill(r.label, r == range) { vm.setRange(r) } }
-                    Pill(if (unreadOnly) "Nur ungelesen" else "Auch gelesene", unreadOnly) { vm.setUnreadOnly(!unreadOnly) }
+                    if (snoozedCount > 0 || showSnoozed) {
+                        Pill("Geparkt ($snoozedCount)", showSnoozed, accent = Brand.Spark) { vm.setDeskSnoozed(!showSnoozed) }
+                    }
+                    DeskRange.values().forEach { r -> Pill(r.label, r == range && !showSnoozed) { vm.setRange(r) } }
+                    if (!showSnoozed) {
+                        Pill(if (unreadOnly) "Nur ungelesen" else "Auch gelesene", unreadOnly) { vm.setUnreadOnly(!unreadOnly) }
+                    }
                 }
             } else {
                 Text(
@@ -146,13 +157,17 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                         EmptyState(
                             icon = if (searching) Icons.Outlined.Search else Icons.Outlined.MarkEmailRead,
                             title = if (searching) "Nichts gefunden" else "Alles erledigt",
-                            text = if (searching) "Andere Suchbegriffe probieren." else
-                                "Im Zeitraum „${range.label}“ liegt nichts mehr auf dem Schreibtisch."
+                            text = when {
+                                searching -> "Andere Suchbegriffe probieren."
+                                showSnoozed -> "Gerade ist nichts geparkt."
+                                else -> "Im Zeitraum „${range.label}“ liegt nichts mehr auf dem Schreibtisch."
+                            }
                         ) {
                             if (!searching) Pill("Posteingang öffnen", false, onClick = onOpenInbox)
                         }
                     }
                 } else {
+                    androidx.compose.runtime.key(showSnoozed) {
                     CardCarousel(
                         messages = cards,
                         accounts = accountMap,
@@ -162,6 +177,7 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
                         onDelete = { vm.delete(listOf(it)) },
                         onSnooze = { snoozeTarget = it }
                     )
+                    }
                 }
             }
 
@@ -176,7 +192,10 @@ fun DeskScreen(vm: AmeliaViewModel, dockDrag: Modifier, onOpenInbox: () -> Unit)
         }
 
         snoozeTarget?.let { m ->
-            SnoozeSheet(onDismiss = { snoozeTarget = null }) { until ->
+            SnoozeSheet(
+                onDismiss = { snoozeTarget = null },
+                onUnsnooze = if (m.snoozedUntil > System.currentTimeMillis()) ({ vm.unsnooze(m); snoozeTarget = null }) else null
+            ) { until ->
                 vm.snooze(m, until)
                 snoozeTarget = null
             }
@@ -342,7 +361,12 @@ private fun MailCard(message: Message, account: Account?, dragProgress: Float, o
                 Spacer(Modifier.weight(1f))
                 if (message.flagged) Icon(Icons.Rounded.Star, "Markiert", tint = Brand.Spark, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
-                Text(Fmt.short(message.date), style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)
+                val parkedUntil = message.snoozedUntil
+                when {
+                    parkedUntil > System.currentTimeMillis() -> ParkChip("bis ${Fmt.short(parkedUntil)}${if (Fmt.short(parkedUntil).contains(':')) "" else ", " + Fmt.timeOnly(parkedUntil)}")
+                    parkedUntil > 0 -> ParkChip("Wieder da")
+                    else -> Text(Fmt.short(message.date), style = MaterialTheme.typography.labelLarge, color = scheme.onSurfaceVariant)
+                }
             }
             Spacer(Modifier.height(18.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -454,5 +478,17 @@ private fun Dock(
         }
         Spacer(Modifier.width(12.dp))
         MorphFab(Icons.Outlined.Edit, null, onClick = onCompose)
+    }
+}
+
+@Composable
+private fun ParkChip(text: String) {
+    Row(
+        Modifier.clip(RoundedCornerShape(10.dp)).background(Brand.Spark).padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(Icons.Outlined.Schedule, null, tint = Color(0xFF2B1A00), modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(text, style = MaterialTheme.typography.labelMedium, color = Color(0xFF2B1A00), fontWeight = FontWeight.Bold)
     }
 }

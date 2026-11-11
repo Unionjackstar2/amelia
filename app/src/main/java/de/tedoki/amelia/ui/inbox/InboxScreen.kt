@@ -141,6 +141,7 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
     val sync by vm.syncState.collectAsState()
     val query by vm.searchQuery.collectAsState()
     val results by vm.searchResults.collectAsState()
+    val snoozedCount by vm.snoozedCount.collectAsState()
 
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -171,6 +172,7 @@ fun InboxScreen(vm: AmeliaViewModel, headerDrag: Modifier, onBackToDesk: () -> U
                     accounts = accs,
                     folders = folders,
                     unread = unread,
+                    snoozedCount = snoozedCount,
                     current = mailbox,
                     onPick = { m ->
                         vm.openMailbox(m)
@@ -577,6 +579,7 @@ private fun FolderDrawer(
     accounts: List<Account>,
     folders: List<Folder>,
     unread: Map<String, Int>,
+    snoozedCount: Int,
     current: Mailbox,
     onPick: (Mailbox) -> Unit,
     onEmptyTrash: (Account) -> Unit,
@@ -589,7 +592,10 @@ private fun FolderDrawer(
         val inboxUnread = folders.filter { it.role == FolderRole.INBOX }.sumOf { unread[it.id] ?: 0 }
         DrawerItem(Icons.Outlined.AllInbox, "Alle Posteingänge", inboxUnread, current == Mailbox.Unified) { onPick(Mailbox.Unified) }
         DrawerItem(Icons.Outlined.StarOutline, "Markiert", 0, current == Mailbox.Flagged) { onPick(Mailbox.Flagged) }
-        DrawerItem(Icons.Outlined.Schedule, "Geparkt", 0, current == Mailbox.Snoozed) { onPick(Mailbox.Snoozed) }
+        DrawerItem(
+            Icons.Outlined.Schedule, "Geparkt", snoozedCount, current == Mailbox.Snoozed,
+            accent = if (snoozedCount > 0) Brand.Spark else null
+        ) { onPick(Mailbox.Snoozed) }
         for (a in accounts) {
             HorizontalDivider(Modifier.padding(vertical = 10.dp, horizontal = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
             Row(
@@ -625,27 +631,52 @@ private fun FolderDrawer(
             }
         }
         HorizontalDivider(Modifier.padding(vertical = 10.dp, horizontal = 12.dp), color = MaterialTheme.colorScheme.outlineVariant)
-        DrawerItem(Icons.Outlined.PersonAdd, "Konto hinzufügen", 0, false, onAddAccount)
-        DrawerItem(Icons.Outlined.Settings, "Einstellungen", 0, false, onSettings)
+        DrawerItem(Icons.Outlined.PersonAdd, "Konto hinzufügen", 0, false, onClick = onAddAccount)
+        DrawerItem(Icons.Outlined.Settings, "Einstellungen", 0, false, onClick = onSettings)
     }
 }
 
 @Composable
-private fun DrawerItem(icon: ImageVector, label: String, badge: Int, selected: Boolean, onClick: () -> Unit) {
+private fun DrawerItem(
+    icon: ImageVector,
+    label: String,
+    badge: Int,
+    selected: Boolean,
+    accent: Color? = null,
+    onClick: () -> Unit
+) {
     val scheme = MaterialTheme.colorScheme
+    val onAccent = Color(0xFF2B1A00)
+    val background = when {
+        accent != null -> accent.copy(alpha = if (selected) 1f else 0.85f)
+        selected -> scheme.secondaryContainer
+        else -> Color.Transparent
+    }
+    val content = when {
+        accent != null -> onAccent
+        selected -> scheme.onSecondaryContainer
+        else -> scheme.onSurfaceVariant
+    }
     Row(
         Modifier
             .fillMaxWidth()
             .height(52.dp)
             .clip(RoundedCornerShape(26.dp))
-            .background(if (selected) scheme.secondaryContainer else Color.Transparent)
+            .background(background)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, null, tint = if (selected) scheme.onSecondaryContainer else scheme.onSurfaceVariant)
+        Icon(icon, null, tint = content)
         Spacer(Modifier.width(14.dp))
-        Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        if (badge > 0) Text("$badge", style = MaterialTheme.typography.labelLarge, color = scheme.primary)
+        Text(
+            label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f), maxLines = 1,
+            overflow = TextOverflow.Ellipsis, color = if (accent != null) onAccent else scheme.onSurface,
+            fontWeight = if (accent != null) FontWeight.Bold else null
+        )
+        if (badge > 0) {
+            Text("$badge", style = MaterialTheme.typography.labelLarge, color = if (accent != null) onAccent else scheme.primary,
+                fontWeight = FontWeight.Bold)
+        }
     }
 }

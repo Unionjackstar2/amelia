@@ -23,6 +23,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,6 +48,8 @@ import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Attachment
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.MarkEmailUnread
@@ -150,6 +155,10 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
     val account = accounts?.firstOrNull { it.id == m.accountId }
     val inTrash = folders.firstOrNull { it.id == m.folderId }?.role == FolderRole.TRASH
 
+    // Platz, den die schwebende Aktionsleiste unten belegt
+    val barSpace = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 100.dp
+
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         // Werkzeugleiste
         Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -182,7 +191,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 14.dp).glass(RoundedCornerShape(30.dp)).animateContentSize().padding(18.dp)
         ) {
-            Text(m.subject.ifBlank { "(Kein Betreff)" }, style = MaterialTheme.typography.headlineSmall, maxLines = 4, overflow = TextOverflow.Ellipsis)
+            ExpandableSubject(m.subject.ifBlank { "(Kein Betreff)" })
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { showDetails = !showDetails }) {
                 Avatar(m.senderDisplay, m.fromEmail.ifBlank { m.senderDisplay }, size = 42.dp)
@@ -262,6 +271,7 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                             MailWebView(
                                 html = c.html,
                                 allowImages = allowImages,
+                                bottomPadding = (barSpace.value + 16).toInt(),
                                 resolveCid = { cid -> vm.repo.inlineImage(m.id, cid) },
                                 onMailto = { to -> vm.push(Screen.Compose(ComposeArgs(ComposeMode.NEW, to = to))) }
                             )
@@ -273,16 +283,20 @@ fun DetailScreen(vm: AmeliaViewModel, messageId: Long) {
                         Text(
                             plainTextAnnotated(c.text.orEmpty(), MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.primary),
                             style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)
+                            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                                .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 18.dp + barSpace)
                         )
                     }
                 }
             }
         }
 
-        // Aktionsleiste
+    }
+
+        // Schwebende Aktionsleiste – der Inhalt scrollt darunter durch
         Row(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(14.dp).glass(RoundedCornerShape(32.dp), elevation = 8.dp).padding(6.dp),
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(14.dp)
+                .glass(RoundedCornerShape(32.dp), elevation = 12.dp, opacity = 1.35f).padding(6.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
             BarAction(Icons.AutoMirrored.Outlined.Reply, "Antworten") { vm.push(Screen.Compose(ComposeArgs(ComposeMode.REPLY, m.id))) }
@@ -391,14 +405,14 @@ private fun plainTextAnnotated(text: String, quoteColor: Color, linkColor: Color
 
 private const val INLINE_HOST = "amelia.inline"
 
-private fun prepareHtml(html: String): String {
+private fun prepareHtml(html: String, bottomPadding: Int): String {
     var h = html
     h = h.replace(Regex("(?is)<script[^>]*>.*?</script>"), "")
     h = h.replace(Regex("(?i)<meta[^>]+(charset|http-equiv)[^>]*>"), "")
     h = h.replace(Regex("(?i)cid:([^\"'\\s)>]+)")) { "https://$INLINE_HOST/" + URLEncoder.encode(it.groupValues[1], "UTF-8") }
     val head = """<meta name="viewport" content="width=device-width, initial-scale=1"><style>
         html,body{margin:0;padding:0;background:#fff}
-        body{padding:16px;font-family:sans-serif;font-size:15px;line-height:1.5;color:#1b1f27;word-wrap:break-word;overflow-wrap:anywhere}
+        body{padding:16px 16px ${bottomPadding}px 16px;font-family:sans-serif;font-size:15px;line-height:1.5;color:#1b1f27;word-wrap:break-word;overflow-wrap:anywhere}
         img{max-width:100%!important;height:auto!important}
         table{max-width:100%!important}
         pre{white-space:pre-wrap}
@@ -414,10 +428,11 @@ private fun prepareHtml(html: String): String {
 private fun MailWebView(
     html: String,
     allowImages: Boolean,
+    bottomPadding: Int,
     resolveCid: suspend (String) -> Pair<String, ByteArray>?,
     onMailto: (String) -> Unit
 ) {
-    val prepared = remember(html) { prepareHtml(html) }
+    val prepared = remember(html, bottomPadding) { prepareHtml(html, bottomPadding) }
     val key = "${prepared.hashCode()}_$allowImages"
     AndroidView(
         modifier = Modifier.fillMaxSize(),
@@ -510,5 +525,35 @@ suspend fun saveToDownloads(context: Context, file: File, name: String, mime: St
         true
     } catch (_: Exception) {
         false
+    }
+}
+
+/** Betreff: kurz und kompakt, bei Überlänge per Tipp ausklappbar. */
+@Composable
+private fun ExpandableSubject(subject: String) {
+    var expanded by remember(subject) { mutableStateOf(false) }
+    var overflowing by remember(subject) { mutableStateOf(false) }
+    val long = subject.length > 70
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+            .then(if (overflowing || expanded) Modifier.clickable { expanded = !expanded } else Modifier),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            subject,
+            style = if (long) MaterialTheme.typography.titleLarge else MaterialTheme.typography.headlineSmall,
+            maxLines = if (expanded) Int.MAX_VALUE else 2,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { if (!expanded) overflowing = it.hasVisualOverflow },
+            modifier = Modifier.weight(1f).animateContentSize()
+        )
+        if (overflowing || expanded) {
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                if (expanded) "Betreff einklappen" else "Ganzen Betreff zeigen",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp, top = 2.dp)
+            )
+        }
     }
 }
